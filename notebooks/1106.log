@@ -1,0 +1,186 @@
+**2025/11/06 — SpikingRx 模擬環境建立紀錄**
+
+**目的**
+
+建立一個在 Windows 上可獨立執行、支援 GPU 的 Python 開發環境，\
+用來模擬 SpikingRx（包含 LIF、SEW-ResNet、主模型）。\
+此環境需：
+
+- 不干擾系統 Python
+- 可用 CUDA 運算（NVIDIA GTX 950M）
+- 可直接切換 CPU/GPU
+- 結構乾淨，能逐步擴充
+-----
+**一、專案結構建立**
+
+在 CMD 輸入：
+
+D:
+
+mkdir D:\dev
+
+mkdir D:\dev\spikingrx
+
+cd /d D:\dev\spikingrx
+
+mkdir src
+
+mkdir data
+
+mkdir notebooks
+
+結果：
+
+D:\dev\spikingrx
+
+│
+
+├── src\
+
+├── data\
+
+├── notebooks\
+
+└── （之後會新增 .venv 與 activate\_env.bat）
+
+用意：
+
+- src/ → 放神經元模型、SpikingRx 架構與訓練程式。
+- data/ → 測試或模擬資料（OFDM、LLR 等）。
+- notebooks/ → 放訓練紀錄或可視化筆記。
+-----
+**二、建立虛擬環境**
+
+在 D:\dev\spikingrx 下輸入：
+
+python -m venv .venv
+
+啟動環境：
+
+.venv\Scripts\activate
+
+若成功，CMD 前會出現：
+
+(.venv) D:\dev\spikingrx>
+
+用意：\
+讓這個專案的所有套件（PyTorch、NumPy 等）都安裝在 .venv 裡，\
+不影響其他專案或系統 Python。
+
+-----
+**三、建立自動啟動批次檔**
+
+新建 activate\_env.bat，內容如下：
+
+@echo off
+
+D:
+
+cd D:\dev\spikingrx
+
+call .venv\Scripts\activate
+
+cmd
+
+用意：\
+只要雙擊此檔，就能：
+
+1. 自動切換到 D 槽與專案目錄
+1. 自動啟用虛擬環境
+1. 開啟可操作的命令提示字元
+-----
+**四、安裝 PyTorch 與 CUDA 支援**
+
+在虛擬環境下執行：
+
+pip install torch torchvision torchaudio --extra-index-url https://download.pytorch.org/whl/cu116
+
+完成後驗證：
+
+import torch
+
+print("Torch:", torch.\_\_version\_\_)
+
+print("CUDA available:", torch.cuda.is\_available())
+
+if torch.cuda.is\_available():
+
+`    `print("GPU:", torch.cuda.get\_device\_name(0))
+
+實際結果：
+
+Torch: 1.12.1+cu116
+
+CUDA available: True
+
+GPU: NVIDIA GeForce GTX 950M
+
+代表 PyTorch 能正確呼叫 GPU。
+
+-----
+**五、測試 GPU 運算能力**
+
+在 Python 互動模式輸入：
+
+import torch
+
+x = torch.randn(4096, 4096, device='cuda')
+
+y = x @ x.t()
+
+torch.cuda.synchronize()
+
+print("Matmul OK. y shape:", y.shape)
+
+結果：
+
+Matmul OK. y shape: torch.Size([4096, 4096])
+
+GPU 可執行大矩陣乘法，運算無誤。
+
+-----
+**六、修正 NumPy 相容性警告**
+
+初次執行出現：
+
+A module compiled using NumPy 1.x cannot be run in NumPy 2.x
+
+代表 PyTorch 舊版不支援 NumPy 2。\
+修正方式：
+
+pip install numpy==1.26.4
+
+之後測試正常。
+
+-----
+**七、概念與驗證**
+
+|**概念**|**說明**|
+| :-: | :-: |
+|虛擬環境 .venv|每個專案獨立管理套件，不會互相干擾。|
+|CUDA 驗證|確保 GPU 驅動、PyTorch CUDA、硬體版本一致。|
+|CMD 測試流程|可直接測試 GPU 乘法是否能在 2GB 記憶體內執行。|
+|隔離式模擬|SpikingRx 模擬與 OAI 分開開發、互不影響。|
+
+-----
+**八、目前進度與下一步**
+
+目前：
+
+- Python 3.10.11 + CUDA 環境 OK
+- 虛擬環境與專案架構完成
+- GPU 運算測試通過
+
+下一步：
+
+1. 建立 src\models\lif\_neuron.py，實作 LIF 放電模型
+1. 建立 src\tests\test\_lif\_forward.py，測試 spike 輸出
+1. 新增 Kaiming Normal 初始化程式
+-----
+**小重點**
+
+- 目前測試 GPU 是為了**確認環境支援 CUDA**，並非只能用 GPU。
+- 實作時可自由切換：
+- device = torch.device("cuda" if torch.cuda.is\_available() else "cpu")
+
+  程式會自動選擇可用裝置（CPU/GPU）。
