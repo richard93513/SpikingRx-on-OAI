@@ -1,4 +1,4 @@
-# 1115 SpikingRx System Architecture Overview
+### 1115 SpikingRx System Architecture Overview
 
 Objective:  
 Use a “four-layer flowchart”, from system level → training flow → model forward → single SEW block, to clearly explain the role, data flow, and tensor dimensions of SpikingRx in the 5G PDSCH receiver chain.
