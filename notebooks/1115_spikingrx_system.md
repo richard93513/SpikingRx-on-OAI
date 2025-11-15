@@ -75,7 +75,7 @@ In the entire 5G PDSCH receiver chain, which part is replaced by SpikingRx? What
 
 ## 1.1 Flowchart (System Level)
 
-(IMAGE HERE – system-level flowchart)
+<img width="837" height="124" alt="image" src="https://github.com/user-attachments/assets/ee5b4d30-82aa-4734-b3b1-56b7b7f6efac" />
 
 Overall structure (from right → left):
 
@@ -134,7 +134,7 @@ When training SpikingRx, within a single epoch, what steps are performed on each
 
 ## 2.1 Flowchart (Epoch)
 
-(IMAGE HERE – epoch-level training flowchart)
+<img width="1213" height="66" alt="image" src="https://github.com/user-attachments/assets/3667928e-db6b-488b-a812-0b235b3f99f2" />
 
 Using the BCE loss described in Sec.III-C of the paper, we can break one epoch into:
 
@@ -182,7 +182,7 @@ If we only look at inference (ignoring training), how does one tensor x(B, T, C,
 
 ## 3.1 Flowchart (Forward Pipeline)
 
-(IMAGE HERE – forward-pipeline diagrams split into two parts)
+<img width="865" height="102" alt="image" src="https://github.com/user-attachments/assets/bdd65378-0dfb-4b78-9640-504c074f2f8c" /><img width="780" height="91" alt="image" src="https://github.com/user-attachments/assets/052e7f7f-4e23-4ec6-9a5a-33926c4119cf" />
 
 According to Fig.3(e) and Table I in the paper, we can describe the forward data flow as follows.
 
@@ -323,7 +323,7 @@ What is the difference compared with a conventional ResNet block?
 
 ## 4.1 Flowchart (SEW Block)
 
-(IMAGE HERE – SEW block internal structure diagram)
+<img width="1198" height="82" alt="image" src="https://github.com/user-attachments/assets/933665d1-2dda-477b-94f1-13813cb044a4" />
 
 (Similar to Fig.5(b) in the paper.)
 
