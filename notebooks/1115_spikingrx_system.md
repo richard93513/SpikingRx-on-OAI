@@ -182,7 +182,7 @@ If we only look at inference (ignoring training), how does one tensor x(B, T, C,
 
 ## 3.1 Flowchart (Forward Pipeline)
 
-<img width="12519" height="164" alt="Untitled diagram-2025-11-15-120245" src="https://github.com/user-attachments/assets/06e17a35-cbcc-4bc4-94f9-ddd4decc3636" />
+<img width="5715" height="206" alt="Untitled diagram-2025-11-15-120714" src="https://github.com/user-attachments/assets/0e85059a-201f-4f53-ac9a-fb40473eb24e" />
 
 According to Fig.3(e) and Table I in the paper, we can describe the forward data flow as follows.
 
