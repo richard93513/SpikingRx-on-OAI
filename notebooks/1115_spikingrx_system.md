@@ -303,17 +303,14 @@ This pre-processing can be implemented either:
 (Paper reference: Fig.5(b) SEW-ResNet Block)  
 (Code: SEW / LIF / Norm / Conv)
 
-- SEW block implementation:  
-  - https://github.com/richard93513/SpikingRx-on-OAI/blob/main/src/models/sew_block.py  
-
-- LIF neuron:  
-  - https://github.com/richard93513/SpikingRx-on-OAI/blob/main/src/models/lif_neuron.py  
-
-- Normalization layer:  
-  - https://github.com/richard93513/SpikingRx-on-OAI/blob/main/src/models/norm_layer.py  
-
 - Convolution block:  
   - https://github.com/richard93513/SpikingRx-on-OAI/blob/main/src/models/conv_block.py  
+- Normalization layer:  
+  - https://github.com/richard93513/SpikingRx-on-OAI/blob/main/src/models/norm_layer.py  
+- LIF neuron:  
+  - https://github.com/richard93513/SpikingRx-on-OAI/blob/main/src/models/lif_neuron.py
+- SEW block implementation:  
+  - https://github.com/richard93513/SpikingRx-on-OAI/blob/main/src/models/sew_block.py
 
 **Question:**  
 Inside a single SEW block, how are “Conv / Norm / LIF / Shortcut” connected mathematically?  
