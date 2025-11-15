@@ -1,4 +1,4 @@
-# **1115 SpikingRx System Architecture Overview
+# 1115 SpikingRx System Architecture Overview
 ---
 
 Objective:  
