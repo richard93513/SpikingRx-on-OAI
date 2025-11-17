@@ -69,7 +69,7 @@ cd ~/openairinterface5g/cmake_targets/ran_build/build
 sudo ./nr-uesoftmodem --rfsim --sa
 ```
 ### 2.3 Expected Successful Connection Output
-
+<img width="368" height="512" alt="image" src="https://github.com/user-attachments/assets/7aaa75b1-4c89-4012-b2e4-7c43d09c9269" />
 You should see:
 
 - RSRP / SNR  
@@ -234,8 +234,7 @@ sudo ./nr-uesoftmodem --rfsim --sa
 
 ## A.4 Dump Result Images
 
-(omitted)
-
+<img width="488" height="512" alt="image" src="https://github.com/user-attachments/assets/20542ea0-20b4-465f-8d34-9eec51949cc1" />
 
 ## A.5 Explanation of Dump Results
 
@@ -391,8 +390,7 @@ python3 oai_to_32x32.py
 
 ## B.4 Result Images
 
-(omitted)
-
+<img width="512" height="296" alt="image" src="https://github.com/user-attachments/assets/f9d9652c-200f-4247-90a7-ca121b15dfa0" />
 
 ## B.5 Explanation of Visualization
 
@@ -455,8 +453,7 @@ python3 test.py
 
 ## C.4 Result Images
 
-(omitted)
-
+<img width="512" height="397" alt="image" src="https://github.com/user-attachments/assets/6f2fc4f4-4755-4227-8d2f-7e71bc3413c0" />
 
 ## C.5 Explanation of test.py Output
 
