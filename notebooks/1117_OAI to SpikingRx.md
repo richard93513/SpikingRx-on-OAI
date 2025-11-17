@@ -25,45 +25,49 @@ Ubuntu 22.04.6 LTS (best compatibility with OAI)
 
 ### 1.2 Install OAI Dependencies
 
+```bash
 sudo apt update  
 sudo apt install git build-essential cmake ninja-build \
     python3 python3-pip python3-venv \
     libboost-all-dev libsctp-dev libconfig++-dev
+```
 
 ### 1.3 Download OAI
 
+```bash
 cd ~  
 git clone https://gitlab.eurecom.fr/oai/openairinterface5g.git  
 cd openairinterface5g
+```
 
 ### 1.4 Compile OAI (gNB + nrUE)
 
 Clear cache:
-
+```bash
 cd ~/openairinterface5g/cmake_targets/ran_build/build  
 rm -rf CMakeCache.txt CMakeFiles
-
+```
 Compile:
-
+```bash
 cd ~/openairinterface5g/cmake_targets  
 sudo ./build_oai --gNB --nrUE -w SIMU
-
+```
 
 ---
 
 ## 2. rfsim Startup and Connection
 
 ### 2.1 Start gNB
-
+```bash
 cd ~/openairinterface5g/cmake_targets/ran_build/build  
 sudo ./nr-softmodem --rfsim --sa \
   -O ci-scripts/conf_files/gnb.sa.band78.106prb.rfsim.conf
-
+```
 ### 2.2 Start UE (new terminal)
-
+```bash
 cd ~/openairinterface5g/cmake_targets/ran_build/build  
 sudo ./nr-uesoftmodem --rfsim --sa
-
+```
 ### 2.3 Expected Successful Connection Output
 
 You should see:
@@ -82,9 +86,7 @@ You should see:
 # A. PDSCH Dump (UE-side C Program)
 
 ## A.1 Source Code
-
-## A.1 Source Code
-
+```c
 if (scope_req->copy_rxdataF_to_scope) {
   size_t size = sizeof(c16_t) * nb_re_pdsch;
   int copy_index = symbol - dlsch_config->start_symbol;
@@ -169,7 +171,7 @@ if (nb_re_pdsch > 0 && nbRx > 0) {
 }
 
 // ===== end of SpikingRx slot-level dump =====
-
+```
 
 ---
 
@@ -215,19 +217,18 @@ Total: 600 RE appended sequentially.
 - Print end message  
 - Reset dump flag  
 
-
 ---
 
 ## A.3 Terminal Commands
 
 Start gNB:
-
+```bash
 sudo ./nr-softmodem --rfsim --sa ...
-
+```
 Start UE:
-
+```bash
 sudo ./nr-uesoftmodem --rfsim --sa
-
+```
 
 ---
 
@@ -253,7 +254,7 @@ You should see logs such as:
 # B. OAI → 32×32 Mapping Code (Python)
 
 ## B.1 Python Code
-
+```python
 import numpy as np
 import torch
 
@@ -286,7 +287,7 @@ def oai_to_spikingrx_grid(path, H=32, W=32):
     tensor[0] = out.real
     tensor[1] = out.imag
     return torch.tensor(tensor)
-
+```
 
 ---
 
@@ -409,7 +410,7 @@ If you visualize the resulting tensor (for example, plotting the I-channel as a 
 # C. test.py Verification (Python)
 
 ## C.1 Code
-
+```python
 from oai_to_32x32 import oai_to_spikingrx_grid
 
 path = "/tmp/ue_pdsch_slot_rxdataF_ext.bin"
@@ -417,7 +418,7 @@ tensor = oai_to_spikingrx_grid(path)
 
 print("shape:", tensor.shape)
 print(tensor[:, :8, :8])  # print the first 8x8 block for inspection
-
+```
 
 ---
 
@@ -446,9 +447,9 @@ Purpose:
 ---
 
 ## C.3 Terminal Command
-
+```bash
 python3 test.py
-
+```
 
 ---
 
