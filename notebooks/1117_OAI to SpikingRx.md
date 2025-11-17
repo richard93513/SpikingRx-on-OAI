@@ -70,6 +70,8 @@ sudo ./nr-uesoftmodem --rfsim --sa
 ```
 ### 2.3 Expected Successful Connection Output
 <img width="368" height="512" alt="image" src="https://github.com/user-attachments/assets/7aaa75b1-4c89-4012-b2e4-7c43d09c9269" />
+
+
 You should see:
 
 - RSRP / SNR  
