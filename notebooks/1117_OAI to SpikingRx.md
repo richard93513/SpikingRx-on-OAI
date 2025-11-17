@@ -381,9 +381,9 @@ Example usage in a standalone script (e.g., oai_to_32x32.py):
 
 - Make sure the file contains the function "oai_to_spikingrx_grid"  
 - Then execute:
-
+```bash
 python3 oai_to_32x32.py
-
+```
 (Or directly import and call the function inside another Python script.)
 
 
