@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+# src/models/spikingrx_model.py
 """
 SpikingRx 論文級架構
 StemConv (Conv+Norm+LIF) + 6×SEW Blocks + ANN Readout (LLR)
