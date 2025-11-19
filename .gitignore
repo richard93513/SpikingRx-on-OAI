@@ -1,11 +1,57 @@
-# Ignore virtual environments
-venv/
-.env/
+# =====================
+# Python Virtual Env
+# =====================
 .venv/
+venv/
+env/
 
-# Python cache
+# =====================
+# Python Cache
+# =====================
 __pycache__/
 *.pyc
+*.pyo
 
-# VSCode settings (optional)
+# =====================
+# Jupyter Notebook Cache
+# =====================
+.ipynb_checkpoints/
+
+# =====================
+# Data / Model / Dumps
+# =====================
+*.pt
+*.pth
+*.bin
+*.npy
+*.npz
+*.h5
+*.pickle
+*.pkl
+*.ckpt
+
+# OAI full-grid / IQ dumps
+dumps/
+fullgrid/
+*.iq
+*.dat
+
+# =====================
+# Logs / temporary
+# =====================
+logs/
+*.log
+*.tmp
+
+# =====================
+# Media
+# =====================
+# 允許 PNG / JPG 正常 push
+# 但 GIF 一律 ignore
+*.gif
+
+# =====================
+# IDE / Editor
+# =====================
 .vscode/
+.idea/
