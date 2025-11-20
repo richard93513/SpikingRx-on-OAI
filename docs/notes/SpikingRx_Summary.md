@@ -139,7 +139,7 @@ The purpose of this chapter is:
 
 Below is the technical flow diagram of the entire project system:
 
-(Place your diagram here — same location as your notes)
+<img width="496" height="1322" alt="Untitled diagram-2025-11-20-003551" src="https://github.com/user-attachments/assets/eefa2bfe-5bc9-4794-8bea-4cca8fac2396" />
 
 [Full architecture diagram: OAI → Python Loader → SpikingRx SNN → LLR → Visualization]
 
