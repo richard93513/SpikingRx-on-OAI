@@ -9,6 +9,12 @@ from torch.utils.data import DataLoader
 import matplotlib.pyplot as plt
 import numpy as np
 
+# --------------------------
+#  CPU 加速設定（安全，不影響結果）
+# --------------------------
+torch.set_num_threads(8)  # 你的 i7-6700HQ → 4C8T 全開
+torch.set_num_interop_threads(8)
+
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 SRC_DIR = os.path.join(CURRENT_DIR, "..")
 if SRC_DIR not in sys.path:
@@ -33,12 +39,27 @@ def plot_loss(loss_list, out_png):
 
 def train():
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    # 強制 CPU（你目前沒有 GPU）
+    device = torch.device("cpu")
     print("Using device:", device)
 
+    # --------------------------
+    # DataLoader 加速（安全）
+    # --------------------------
     train_ds = SimpleOFDMDataset(num_samples=10000, snr_db=20)
-    train_loader = DataLoader(train_ds, batch_size=16, shuffle=True, num_workers=4)
+    train_loader = DataLoader(
+    	train_ds,
+    	batch_size=16,
+    	shuffle=True,
+    	num_workers=4,
+   	 pin_memory=(device.type == "cuda"),   # 🔥 CPU 不開 → 不跳警告
+    	prefetch_factor=2
+    	)	
 
+
+    # --------------------------
+    # 建立模型（不動你的架構）
+    # --------------------------
     model = SpikingRxModel(
         in_ch=2,
         base_ch=16,
@@ -48,18 +69,31 @@ def train():
         llr_temperature=1.0,
     ).to(device)
 
+    # --------------------------
+    # torch.compile → CPU 加速
+    # （不改數值、不改結果）
+    # --------------------------
+    try:
+        model = torch.compile(model)
+        print("Model compiled with torch.compile()")
+    except Exception as e:
+        print("Warning: torch.compile unavailable:", e)
+
     opt = torch.optim.Adam(model.parameters(), lr=1e-4)
     loss_fn = nn.BCEWithLogitsLoss()
 
     epochs = 20
     loss_history = []
 
+    # --------------------------
+    # 訓練迴圈（不動你的邏輯）
+    # --------------------------
     for ep in range(1, epochs + 1):
         total_loss = 0.0
 
         for batch_x, batch_y in train_loader:
-            batch_x = batch_x.to(device)
-            batch_y = batch_y.to(device)
+            batch_x = batch_x.to(device, non_blocking=True)
+            batch_y = batch_y.to(device, non_blocking=True)
 
             opt.zero_grad()
 
@@ -100,5 +134,6 @@ def train():
 
 if __name__ == "__main__":
     train()
+
 
 

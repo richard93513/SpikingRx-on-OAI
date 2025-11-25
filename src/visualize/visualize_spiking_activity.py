@@ -108,7 +108,7 @@ def save_llr_heatmap(llr, out_png):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--ckpt", type=str, default="../train/spikingrx_checkpoint.pth",
+    parser.add_argument("--ckpt", type=str, default="/home/richard93513/SpikingRx-on-OAI/src/train/spikingrx_checkpoint.pth",
                         help="trained checkpoint path")
     parser.add_argument("--dump", type=str, default=None,
                         help="OAI dump path, default latest")
