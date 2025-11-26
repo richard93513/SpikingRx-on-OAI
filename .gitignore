@@ -54,3 +54,4 @@ logs/
 # =====================
 .vscode/
 .idea/
+spx_records/raw/

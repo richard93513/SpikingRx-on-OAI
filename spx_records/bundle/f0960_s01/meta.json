@@ -1,0 +1,9 @@
+{
+  "frame": 960,
+  "slot": 1,
+  "fg_idx": 19,
+  "tx_idx": 454,
+  "rnti": 65535,
+  "fullgrid_file": "f0960_s01_fullgrid_idx000019.bin",
+  "txbits_file": "f0960_s00_txbits_idx000454_rnti65535.bin"
+}
