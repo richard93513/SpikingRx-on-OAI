@@ -1,0 +1,341 @@
+# 🟩 SpikingRx-on-OAI — 1126 完整技術筆記
+（包含 fullgrid dump、TX TB dump、整理、bundle、自動 inference）
+
+※ 這是「正式文件」格式，所有程式碼區我都已空下來，你自己貼。
+
+---
+
+# 📘 0. 今日目標與成果摘要
+
+本次更新主要完成：
+
+- 重構 OAI Dump 機制 → 移除 /tmp，統一儲存到 repo  
+- 新增 Full-grid Dump（接收端 RX） → 正常運作  
+- 新增 TX TB Bits Dump（發送端 TX） → 正常運作  
+- 修正 OAI dump 格式 ＆ 命名整合  
+- 新增 Python Loader（新版）：oai_to_spikingrx_tensor.py  
+- 修復 inference pipeline，LLR output 正常  
+- 新增 Bundle 工具：bundle_records.py 自動整理資料  
+- 資料結構正式定型：spx_records/  
+- 為後續 LDPC decoder & BER pipeline 做準備  
+
+---
+
+# 📗 1. OAI Dump 系統改動（C 程式碼）
+
+本次改動 OAI 兩個部分：
+
+---
+
+## 1.1 Full-grid Dump（UE 接收端）
+
+● 位置  
+openairinterface5g/openair1/PHY/NR_UE_TRANSPORT/nr_dlsch_demodulation.c
+
+● 用途  
+把 UE 端做完 FFT 後的 **14 × 2048 complex16** 全頻域 grid dump 下來。
+
+● 檔名前綴  
+```
+f<frame>_s<slot>_fullgrid_idx<XXXXXX>.bin
+```
+例如：
+```
+f0278_s01_fullgrid_idx000032.bin
+```
+
+● 檔案內容格式
+
+| 區塊   | 型態              | 大小       | 說明 |
+|--------|-------------------|------------|-------|
+| Header | uint16 × 8        | 16 bytes   | frame, slot, n_sym, n_sc, first_sc, cw… |
+| Payload| int16 × 2 × (14×2048) | 57344 bytes | I/Q 值 complex16 |
+
+● 程式碼位置（空位給你貼）
+```c
+// FULLGRID DUMP CODE HERE
+```
+
+---
+
+## 1.2 TX TB Bits Dump（gNB 發送端）
+
+● 位置  
+openairinterface5g/openair1/PHY/NR_TRANSPORT/nr_dlsch_coding.c
+
+● 用途  
+Dump **未 CRC、未 LDPC 的原始 bits**（A bits → A/8 bytes）
+
+● 檔名前綴  
+```
+f<frame>_s<slot>_txbits_idx<XXXXXX>_rnti<XXXXX>.bin
+```
+例如：
+```
+f0458_s00_txbits_idx001243_rnti65535.bin
+```
+
+● 檔案格式
+
+| 區段   | 內容                    | 型態  |
+|--------|--------------------------|--------|
+| Payload| A/8 bytes（系統輸入 bits） | uint8 |
+
+● 程式碼空位
+```c
+// TX TB DUMP CODE HERE
+```
+
+---
+
+# 📘 2. Dump 資料最終存放結構
+
+已統一目錄結構：
+
+```
+SpikingRx-on-OAI/
+  spx_records/
+    raw/
+      f0278_s01_fullgrid_idx000032.bin
+      f0278_s00_txbits_idx001243_rnti65535.bin
+      ...
+    bundle/
+      f0278_s01/
+        fullgrid.bin
+        txbits.bin
+        meta.json
+```
+
+raw → bundle → inference  
+**分開、乾淨、可追蹤**
+
+---
+
+# 📗 3. Python Loader（新版）
+
+`oai_to_spikingrx_tensor.py`
+
+● 功能：
+
+- 讀 fullgrid bin  
+- parse header（frame/slot/n_sym/n_sc…）  
+- reshape → (14,2048)  
+- 擷取中心 106 PRB → 1272 SC  
+- 壓縮成 32×32  
+- 時域補零至 32 rows  
+- 輸出 Tensor：(1,5,2,32,32)
+
+● 輸出格式
+
+| 名稱 | 型態 | 說明 |
+|------|-------|-------|
+| x    | torch.float32 | (1,5,2,32,32) |
+| meta | dict | frame、slot、used_sc、first_sc… |
+
+● 程式碼空位：
+```python
+# NEW LOADER CODE HERE
+```
+
+---
+
+# 📘 4. Inference Pipeline
+
+`run_spikingrx_on_oai_dump.py`
+
+你已成功：
+
+✔ fullgrid → Tensor  
+✔ 載入 checkpoint  
+✔ forward → LLR  
+✔ 儲存：
+
+- llr.npy
+- llr_heatmap.png
+- spike_rate.png
+- llr_int8_for_oai.bin
+
+● LLR int8 格式（後續給 OAI LDPC decoder）
+
+| 名稱 | 長度 | 說明 |
+|------|--------|--------|
+| llr_int8 | G bits | flatten 後轉 int8 [-127,127] |
+
+● 輸出目錄
+```
+src/inference/out/
+  llr.npy
+  llr_heatmap.png
+  spike_rate.png
+  llr_int8_for_oai.bin
+```
+
+● 程式碼空位：
+```python
+# RUN SPIKINGRX ON FULLGRID CODE HERE
+```
+
+---
+
+# 📗 5. bundle_records.py — 自動配對工具
+
+你已成功跑出：
+
+```
+Found 88 fullgrid files
+Found 1884 txbits files
+[OK] Bundled frame=1002 slot=1 → f1002_s01
+...
+```
+
+● 配對規則：
+
+- fullgrid（RX）為主  
+- 找同 frame 的 txbits  
+- 依 idx 與 fg_idx 最接近配對  
+- 建立 bundle:
+
+```
+spx_records/bundle/fXXXX_sYY/
+  fullgrid.bin
+  txbits.bin
+  meta.json
+```
+
+● meta.json 範例
+```json
+{
+  "frame": 458,
+  "slot": 1,
+  "fg_idx": 3,
+  "tx_idx": 1243,
+  "rnti": 65535,
+  "fullgrid_file": "f0458_s01_fullgrid_idx000003.bin",
+  "txbits_file": "f0458_s00_txbits_idx001243_rnti65535.bin"
+}
+```
+
+● 程式碼空位
+```python
+# BUNDLE TOOL CODE HERE
+```
+
+---
+
+# 📘 6. 已完成的資料流程（總結）
+
+```
+[OAI gNB TX] → dump txbits.bin
+[OAI UE RX] → dump fullgrid.bin
+        ↓
+bundle_records.py
+        ↓
+(fullgrid.bin, txbits.bin, meta.json)
+        ↓
+run_spikingrx_on_oai_dump.py
+        ↓
+SpikingRx LLR
+        ↓
+llr_int8_for_oai.bin
+```
+
+下一步：
+
+```
+llr_int8_for_oai.bin + txbits.bin
+ → OAI LDPC decoder
+ → decoded bits
+ → BER
+```
+
+---
+
+# 📙 7. 各種資料的格式總整理（超重要）
+
+## 7.1 TX TB Bits（txbits.bin）
+
+| 部分 | 說明 |
+|-------|--------|
+| 長度 | A / 8 bytes |
+| 型態 | uint8 |
+| 來源 | nr_dlsch_coding |
+| 用途 | BER ground truth |
+
+---
+
+## 7.2 Full-grid Dump（fullgrid.bin）
+
+### Header (uint16 × 8)
+
+| index | key | 說明 |
+|--------|------|--------|
+| 0 | frame |
+| 1 | slot |
+| 2 | start_symbol (0) |
+| 3 | n_sym (14) |
+| 4 | n_sc_full (2048) |
+| 5 | rx_ant (0) |
+| 6 | cw (0) |
+| 7 | reserved |
+
+### Payload
+- shape = (14 × 2048)
+- 每個元素 complex16 = (int16 real, int16 imag)
+
+---
+
+## 7.3 Loader 輸出 Tensor
+
+```
+(1, T=5, 2, 32, 32)
+```
+
+---
+
+## 7.4 SpikingRx LLR 輸出
+
+| 名稱 | 格式 |
+|--------|----------|
+| llr.npy | float32 (1,32,32,2) |
+| llr_int8_for_oai.bin | flatten int8 |
+
+---
+
+# 📘 8. 本日成果總結（1126）
+
+你今天完成：
+
+✔ UE fullgrid dump  
+✔ TX TB bits dump  
+✔ 統一資料儲存結構  
+✔ loader 新版  
+✔ inference pipeline  
+✔ LLR 輸出完整  
+✔ bundle（成功 88 組 fullgrid）  
+✔ 已準備所有 BER pipeline 需要的資料  
+
+現在你的系統是完整的：
+
+```
+OAI → SpikingRx → LLR → (準備做 BER)
+```
+
+---
+
+# 📕 9. 下一步（明天或下一階段）
+
+## ⭐ F：建立 OAI LDPC decoder Python binding
+- 提取 nrLDPC decoder  
+- 編成 libldpc.so  
+- Python ctypes 包裝  
+- llr + txbits → decoded bits → BER  
+
+## ⭐ G：建立 run_ber.py
+- 讀取所有 bundle  
+- 每組 dump 做：LLR → decode → 比對 bits  
+- 產生 BER CSV  
+- BER curves  
+- heatmaps  
+
+---
+
