@@ -1,0 +1,8 @@
+{
+  "frame": 332,
+  "slot": 11,
+  "fg_idx": 61,
+  "tx_file": "f0332_s11_txbits_idx000664_rnti04660.bin",
+  "ldpc_file": "f0332_s11_ldpc.json",
+  "fullgrid_file": "f0332_s11_fullgrid_idx000061.bin"
+}

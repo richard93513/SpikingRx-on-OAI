@@ -1,0 +1,8 @@
+{
+  "frame": 776,
+  "slot": 1,
+  "fg_idx": 948,
+  "tx_file": "f0776_s01_txbits_idx001551_rnti04660.bin",
+  "ldpc_file": "f0776_s01_ldpc.json",
+  "fullgrid_file": "f0776_s01_fullgrid_idx000948.bin"
+}

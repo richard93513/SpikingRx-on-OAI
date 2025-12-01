@@ -1,0 +1,8 @@
+{
+  "frame": 504,
+  "slot": 1,
+  "fg_idx": 404,
+  "tx_file": "f0504_s01_txbits_idx001007_rnti04660.bin",
+  "ldpc_file": "f0504_s01_ldpc.json",
+  "fullgrid_file": "f0504_s01_fullgrid_idx000404.bin"
+}
