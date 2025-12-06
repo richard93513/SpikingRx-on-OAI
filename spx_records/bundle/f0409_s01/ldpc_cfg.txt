@@ -1,0 +1,15 @@
+frame 409
+slot 1
+dlsch_id 0
+BG 1
+Zc 224
+A 9480
+C 2
+K 4928
+F 152
+G 14400
+Qm 2
+nb_layers 1
+rv_index 0
+tbslbrm 184424
+mcs 9

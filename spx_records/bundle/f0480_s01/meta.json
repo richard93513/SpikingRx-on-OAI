@@ -1,8 +1,12 @@
 {
   "frame": 480,
   "slot": 1,
-  "fg_idx": 356,
-  "tx_file": "f0480_s01_txbits_idx000959_rnti04660.bin",
-  "ldpc_file": "f0480_s01_ldpc.json",
-  "fullgrid_file": "f0480_s01_fullgrid_idx000356.bin"
+  "fg_idx": 536,
+  "tx_idx": 959,
+  "llr_idx": 536,
+  "rnti": 4660,
+  "fullgrid_file": "f0480_s01_fullgrid_idx000536.bin",
+  "txbits_file": "f0480_s01_txbits_idx000959_rnti04660.bin",
+  "llr_file": "f0480_s01_llr_idx000536.bin",
+  "ldpc_cfg_file": "f0480_s01_ldpc.json"
 }

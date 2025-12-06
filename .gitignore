@@ -55,3 +55,14 @@ logs/
 .vscode/
 .idea/
 spx_records/raw/
+
+# =====================
+# Bundle 中的大檔案（必須 ignore）
+# =====================
+spx_records/bundle/**/fullgrid*.bin
+spx_records/bundle/**/txbits.bin
+spx_records/bundle/**/oai_llr*.bin
+spx_records/bundle/**/infer_llr_*.bin
+spx_records/bundle/**/decoded_bits*.bin
+spx_records/bundle/**/llr_heatmap.png
+spx_records/bundle/**/spike_rate.png

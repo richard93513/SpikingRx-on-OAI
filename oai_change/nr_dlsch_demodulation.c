@@ -800,6 +800,49 @@ SPX_FULLGRID_END:;
   if (symbol == (startSymbIdx + nbSymb - 1)) {
     start_meas_nr_ue_phy(ue, DLSCH_LAYER_DEMAPPING);
     nr_dlsch_layer_demapping(llr, dlsch[0].Nl, dlsch_config->qamModOrder, G, codeword_TB0, codeword_TB1, layer_llr_size, layer_llr);
+// ==============================
+// === SPX Dump Demapper LLR ====
+// ==============================
+{
+    static uint32_t spx_llr_idx = 0;
+
+    int frame_rx = proc->frame_rx;
+    int slot_rx  = proc->nr_slot_rx;
+
+    // 建資料夾
+    mkdir("/home/richard93513/SpikingRx-on-OAI", 0755);
+    mkdir("/home/richard93513/SpikingRx-on-OAI/spx_records", 0755);
+    mkdir("/home/richard93513/SpikingRx-on-OAI/spx_records/raw", 0755);
+
+    char fname[512];
+    snprintf(fname, sizeof(fname),
+             "/home/richard93513/SpikingRx-on-OAI/spx_records/raw/"
+             "f%04d_s%02d_llr_idx%06u.bin",
+             frame_rx, slot_rx, spx_llr_idx);
+
+    FILE *fp = fopen(fname, "wb");
+    if (!fp) {
+        printf("[SPX][ERR] Cannot open LLR dump file %s\n", fname);
+    } else {
+
+        // LLR 是 int16_t，但訓練要用 float32 → 轉型
+        float *llr_float = malloc(sizeof(float) * G);
+        for (int i = 0; i < G; i++)
+            llr_float[i] = (float) llr[0][i];
+
+        fwrite(llr_float, sizeof(float), G, fp);
+        fclose(fp);
+        free(llr_float);
+
+        printf("[SPX] DEMAPPER LLR dump: frame=%d slot=%d  →  %s (G=%d)\n",
+               frame_rx, slot_rx, fname, G);
+    }
+
+    spx_llr_idx++;
+}
+// ==============================
+
+    
     stop_meas_nr_ue_phy(ue, DLSCH_LAYER_DEMAPPING);
   /*
     for (int i=0; i < 2; i++){

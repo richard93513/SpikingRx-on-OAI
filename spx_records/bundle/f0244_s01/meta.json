@@ -1,0 +1,12 @@
+{
+  "frame": 244,
+  "slot": 1,
+  "fg_idx": 64,
+  "tx_idx": 487,
+  "llr_idx": 64,
+  "rnti": 4660,
+  "fullgrid_file": "f0244_s01_fullgrid_idx000064.bin",
+  "txbits_file": "f0244_s01_txbits_idx000487_rnti04660.bin",
+  "llr_file": "f0244_s01_llr_idx000064.bin",
+  "ldpc_cfg_file": "f0244_s01_ldpc.json"
+}

@@ -1,7 +1,7 @@
 {
   "frame": 966,
   "slot": 1,
-  "fg_idx": 1328,
+  "fg_idx": 1508,
   "model_ckpt": "/home/richard93513/SpikingRx-on-OAI/src/train/spikingrx_checkpoint.pth",
   "input_fullgrid": "/home/richard93513/SpikingRx-on-OAI/spx_records/bundle/f0966_s01/fullgrid.bin",
   "output_llr_float": "/home/richard93513/SpikingRx-on-OAI/spx_records/bundle/f0966_s01/infer_llr_float.npy",
