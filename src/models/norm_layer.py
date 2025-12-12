@@ -1,102 +1,76 @@
 # src/models/norm_layer.py
-
-# --------------------------------------------------------
-# 模組位置對應：SpikingRx → SEW-ResNet block → SpikeNorm 正規化層
-# --------------------------------------------------------
-# 本檔案對應 SpikingRx 論文中的「SpikeNorm」模組。
-# 在每個 SEW-ResNet block 中，其結構為：
-#       Conv → Norm → LIF(spike)
-# SpikeNorm 的目的：
-#   - 穩定 feature map 的數值範圍，避免 LIF 膜電位爆炸或長期不放電。
-#   - 對每個通道 (channel) 獨立做空間維度正規化。
-#   - 不跨時間 (T)，保留時序稀疏性。
-# --------------------------------------------------------
+# ======================================================
+#  Lightweight SpikingRx – SpikeNorm (論文正統版本)
+# ======================================================
 
 import torch
 import torch.nn as nn
 
-# ========================================================
-# 一、SpikeNorm 模組
-# ========================================================
-# 功能：
-#   - 對每個通道在空間維度 (H, W) 上做標準化。
-#   - 在時序維度 (T) 上逐步處理，不混合不同時間步的統計。
-#   - 避免在 SNN 中破壞時序相關性。
-#   - 輸出維度與輸入相同。
-# ========================================================
 
 class SpikeNorm(nn.Module):
     """
-    SpikeNorm 層：
-      對輸入 feature map 進行「通道層級」的標準化，
-      將每個通道的均值調整為 0、變異數調整為 1。
-      相當於 BatchNorm2d，但：
-        - 不使用 batch running mean/var。
-        - 不跨時間維度 (T) 混合。
-      其目的在於讓 LIF 層接收到穩定分布的輸入，防止閾值觸發行為不穩。
+    SpikeNorm (論文精神版本)
+
+    - 不使用 BatchNorm2d 的 running mean/var
+    - 每個時間步 T 各自做通道層級標準化
+    - 不跨時間步混合統計 → 保留時序稀疏性
+    - 每個 channel 在 H×W 上做 μ/σ 標準化
     """
 
-    def __init__(self, num_channels, eps=1e-5, momentum=0.1, affine=True):
-        super(SpikeNorm, self).__init__()
+    def __init__(self, num_channels, eps=1e-5, affine=True):
+        super().__init__()
+        self.eps = eps
 
-        # ----------------------------------------------------
-        # 建立 BatchNorm2d（但將被用作 SpikeNorm）
-        # ----------------------------------------------------
-        # PyTorch 的 BatchNorm2d 提供了：
-        #   x' = (x - μ) / √(σ² + ε) * γ + β
-        # 其中 μ, σ² 為通道的均值與變異數；
-        # γ, β 為可學習的縮放與平移參數（若 affine=True）。
-        # SpikeNorm 採用相同運算，但不更新全域統計，
-        # 並對每個時間步獨立執行。
-        # ----------------------------------------------------
-        self.bn = nn.BatchNorm2d(
-            num_features=num_channels,  # 通道數 C
-            eps=eps,                    # 避免除以 0
-            momentum=momentum,          # 控制統計更新（雖然不會在這裡用到）
-            affine=affine               # 是否使用可學參數 γ, β
-        )
+        if affine:
+            self.gamma = nn.Parameter(torch.ones(num_channels))
+            self.beta = nn.Parameter(torch.zeros(num_channels))
+        else:
+            self.gamma = None
+            self.beta = None
 
-    # ----------------------------------------------------
-    # 二、Forward 傳遞
-    # ----------------------------------------------------
-    # 支援兩種輸入：
-    #   [B, C, H, W]：單一時間步（靜態影像或 feature map）
-    #   [B, T, C, H, W]：多時間步輸入（spike 時序特徵）
-    # 每個時間步獨立做通道正規化。
-    # ----------------------------------------------------
     def forward(self, x):
-        """
-        輸入  : [B, C, H, W] 或 [B, T, C, H, W]
-        輸出  : 同尺寸張量，經過每通道標準化
-        """
-        if x.dim() == 5:
-            # ------------------------------------------------
-            # 若輸入有時間維度 [B, T, C, H, W]
-            # 對每個時間步分別正規化（不跨時間）
-            # ------------------------------------------------
-            B, T, C, H, W = x.shape
-            out = []
-            for t in range(T):
-                # 對時間步 t 的資料執行 BatchNorm2d
-                out_t = self.bn(x[:, t, :, :, :])
-                out.append(out_t)
-            return torch.stack(out, dim=1)
+        # ------------------------------------------------
+        # case 1: x = [B, C, H, W]
+        # ------------------------------------------------
+        if x.dim() == 4:
+            B, C, H, W = x.shape
 
-        elif x.dim() == 4:
-            # ------------------------------------------------
-            # 若輸入是單一時間步 [B, C, H, W]
-            # 直接執行 BatchNorm2d
-            # ------------------------------------------------
-            return self.bn(x)
+            # 計算各通道 μ, σ
+            mean = x.mean(dim=[0, 2, 3], keepdim=True)
+            var = x.var(dim=[0, 2, 3], unbiased=False, keepdim=True)
+
+            out = (x - mean) / torch.sqrt(var + self.eps)
+
+            if self.gamma is not None:
+                out = out * self.gamma.view(1, C, 1, 1)
+                out = out + self.beta.view(1, C, 1, 1)
+
+            return out
+
+        # ------------------------------------------------
+        # case 2: x = [B, T, C, H, W]
+        # ------------------------------------------------
+        elif x.dim() == 5:
+            B, T, C, H, W = x.shape
+            outs = []
+
+            for t in range(T):
+                xt = x[:, t]  # [B,C,H,W]
+
+                mean = xt.mean(dim=[0, 2, 3], keepdim=True)
+                var = xt.var(dim=[0, 2, 3], unbiased=False, keepdim=True)
+
+                yt = (xt - mean) / torch.sqrt(var + self.eps)
+
+                if self.gamma is not None:
+                    yt = yt * self.gamma.view(1, C, 1, 1)
+                    yt = yt + self.beta.view(1, C, 1, 1)
+
+                outs.append(yt)
+
+            return torch.stack(outs, dim=1)
 
         else:
-            raise ValueError("SpikeNorm input must be 4D [B,C,H,W] or 5D [B,T,C,H,W]")
+            raise ValueError("SpikeNorm input must be 4D or 5D tensor")
 
-# --------------------------------------------------------
-# 模組小結：
-# - SpikeNorm 是 SpikingRx 的時序通道正規化層。
-# - 每個時間步獨立正規化 → 不破壞 spike 時間稀疏性。
-# - 輸入與輸出尺寸一致。
-# - 對應 SEW-ResNet block 的第二階段（Conv 後、LIF 前）。
-# --------------------------------------------------------
 

@@ -203,6 +203,15 @@ def main():
         # -----------------------
         with torch.no_grad():
             llr_vec, aux = model(x)
+        print("[DEBUG] spike_rate_per_stage =")
+        print(aux["spike_rate_per_stage"])
+
+        print("[DEBUG] final_rate_mean =", aux["final_rate_mean"])
+        print("[DEBUG] final_rate_std  =", aux["final_rate_std"])
+        # === DEBUG: Save float LLR ===
+        llr_float_path = os.path.join(bdir, "infer_llr_float.npy")
+        np.save(llr_float_path, llr_vec.cpu().numpy())
+        print("  → Saved float LLR for debug:", llr_float_path)
 
         # -----------------------
         # Save LLR (int8)
@@ -249,5 +258,5 @@ def main():
 
 if __name__ == "__main__":
     main()
-
+    
 

@@ -1,4 +1,7 @@
 # src/models/sew_block.py
+# ======================================================
+#  Lightweight SpikingRx – SEW Block (論文精神 + 輕量版)
+# ======================================================
 
 import torch
 import torch.nn as nn
@@ -10,33 +13,41 @@ from .lif_neuron import LIF
 
 class SEWBlock(nn.Module):
     """
-    Spike-Element-Wise (SEW) Block 模組
+    Spike-Element-Wise (SEW) Block
 
-    主支路 (main path):
-        X[t] → Conv → Norm → LIF → main_out[t]
+    結構：
+      main path: Conv → SpikeNorm → LIF
+      shortcut:  Identity 或 1×1 Conv
+      output:    SEW 加法（spike-aware residual）
 
-    捷徑支路 (shortcut):
-        X[t] → (Identity 或 1×1 Conv) → shortcut_out[t]
-
-    最終輸出:
-        Y[t] = main_out[t] + shortcut_out[t]
-
-    輸入:  [B, T, C_in, H, W]
-    輸出:  [B, T, C_out, H, W]
+    功能：
+      - 保留殘差結構但避免 spike 堆疊造成放電不穩定
+      - 提升深層 SNN 訓練穩定度
+      - 提升 LLR quality（論文中最重要的貢獻之一）
     """
 
-    def __init__(self, in_channels, out_channels, stride=1):
-        super(SEWBlock, self).__init__()
+    def __init__(self, in_channels, out_channels, stride=1, beta=0.9, theta=0.5):
+        super().__init__()
 
         # 主支路
-        self.conv = ConvBlock(in_channels, out_channels, stride=stride)
+        self.conv = ConvBlock(
+            in_channels=in_channels,
+            out_channels=out_channels,
+            kernel_size=3,
+            stride=stride,
+            padding=1,
+        )
         self.norm = SpikeNorm(out_channels)
-        self.lif = LIF(theta=0.2)  # 使用 [B,T,C,H,W] 格式
+        self.lif = LIF(beta=beta, theta=theta)
 
-        # 捷徑分支：若維度不同需用 1×1 Conv 對齊
+        # 捷徑分支
         if in_channels != out_channels or stride != 1:
             self.shortcut = nn.Conv2d(
-                in_channels, out_channels, kernel_size=1, stride=stride
+                in_channels,
+                out_channels,
+                kernel_size=1,
+                stride=stride,
+                bias=False
             )
         else:
             self.shortcut = nn.Identity()
@@ -51,17 +62,23 @@ class SEWBlock(nn.Module):
 
         for t in range(T):
 
-            xt = x[:, t]                          # [B,C,H,W]
-            main = self.conv(xt)                  # Conv
-            main = self.norm(main)                # Norm
+            # 取單一時間步
+            xt = x[:, t]  # [B,C,H,W]
 
-            # LIF 需要 5 維，因此加回 T=1 維
-            main = self.lif(main.unsqueeze(1))    # [B,1,C,H,W]
-            main = main[:, 0]                     # 移除時間維度 → [B,C,H,W]
+            # ---- Main path ----
+            m = self.conv(xt)        # Conv
+            m = self.norm(m)         # SpikeNorm
+            m = self.lif(m.unsqueeze(1))[:, 0]  # LIF → [B,C,H,W]
 
-            sc = self.shortcut(xt)                # Shortcut
+            # ---- Shortcut path ----
+            s = self.shortcut(xt)
 
-            outputs.append(main + sc)
+            # ---- SEW spike-aware add ----
+            # 論文精神：避免 m+s 導致 spike 爆炸
+            # 使用 0.5*(m + s) 當作輕量化 SEW gating（小模型穩定最佳）
+            y = 0.5 * (m + s)
 
-        return torch.stack(outputs, dim=1)        # [B,T,C_out,H,W]
+            outputs.append(y)
+
+        return torch.stack(outputs, dim=1)
 
