@@ -2,11 +2,14 @@
   "frame": 706,
   "slot": 11,
   "fg_idx": 989,
-  "tx_idx": 1411,
+  "fg_mtime": 1764948397.1054125,
+  "tx_idx": 1412,
+  "tx_mtime": 1764948397.1034126,
   "llr_idx": 989,
+  "llr_mtime": 1764948397.1054125,
   "rnti": 4660,
   "fullgrid_file": "f0706_s11_fullgrid_idx000989.bin",
-  "txbits_file": "f0706_s01_txbits_idx001411_rnti04660.bin",
+  "txbits_file": "f0706_s11_txbits_idx001412_rnti04660.bin",
   "llr_file": "f0706_s11_llr_idx000989.bin",
   "ldpc_cfg_file": "f0706_s11_ldpc.json"
 }

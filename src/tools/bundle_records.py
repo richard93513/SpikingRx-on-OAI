@@ -1,18 +1,26 @@
-# bundle_records.py
-# -----------------------------------------------------------
-# 將 spx_records/raw/ 的 fullgrid、txbits、ldpc_cfg、LLR 自動配對
-# 並額外產生一份 ldpc_cfg.txt（給 ldpctest_spx 用）
-#
-# Output:
-#   spx_records/bundle/fXXXX_sYY/
-#       - fullgrid.bin
-#       - txbits.bin
-#       - oai_llr.bin      ← ★ 新增：OAI demapper dump 的 LLR
-#       - ldpc_cfg.json
-#       - ldpc_cfg.txt
-#       - meta.json
-#
-# -----------------------------------------------------------
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
+"""
+bundle_records.py (mtime-based pairing)
+
+將 spx_records/raw/ 的：
+  - fullgrid (bin)
+  - txbits  (bin)
+  - llr     (bin, float32)
+  - ldpc_cfg.json
+
+依照 (frame, slot) + 檔案修改時間 mtime 的「最近鄰」進行配對。
+
+Output:
+  spx_records/bundle/fXXXX_sYY/
+      - fullgrid.bin
+      - txbits.bin
+      - oai_llr.bin
+      - ldpc_cfg.json
+      - ldpc_cfg.txt
+      - meta.json
+"""
 
 import os
 import re
@@ -23,196 +31,171 @@ from glob import glob
 ROOT = os.path.expanduser("~/SpikingRx-on-OAI/spx_records")
 RAW_DIR = os.path.join(ROOT, "raw")
 BUNDLE_DIR = os.path.join(ROOT, "bundle")
-
 os.makedirs(BUNDLE_DIR, exist_ok=True)
 
-# --------------------------------------------------------
-# 正規表示式
-# --------------------------------------------------------
+FULLGRID_RE = re.compile(r"f(?P<frame>\d+)_s(?P<slot>\d+)_fullgrid_idx(?P<idx>\d+)\.bin")
+TXBITS_RE   = re.compile(r"f(?P<frame>\d+)_s(?P<slot>\d+)_txbits_idx(?P<idx>\d+)_rnti(?P<rnti>\d+)\.bin")
+LLR_RE      = re.compile(r"f(?P<frame>\d+)_s(?P<slot>\d+)_llr_idx(?P<idx>\d+)\.bin")
+LDPC_RE     = re.compile(r"f(?P<frame>\d+)_s(?P<slot>\d+)_ldpc\.json")
 
-# fullgrid：fXXXX_sYY_fullgrid_idxIIIIII.bin
-FULLGRID_RE = re.compile(
-    r"f(?P<frame>\d+)_s(?P<slot>\d+)_fullgrid_idx(?P<idx>\d+)\.bin"
-)
 
-# txbits：fXXXX_sYY_txbits_idxIIIIII_rntiRRRRR.bin
-TXBITS_RE = re.compile(
-    r"f(?P<frame>\d+)_s(?P<slot>\d+)_txbits_idx(?P<idx>\d+)_rnti(?P<rnti>\d+)\.bin"
-)
+def _mtime(p: str) -> float:
+    return os.path.getmtime(p)
 
-# ldpc json：fXXXX_sYY_ldpc.json
-LDPC_RE = re.compile(
-    r"f(?P<frame>\d+)_s(?P<slot>\d+)_ldpc\.json"
-)
 
-# ★ 新增：OAI demapper LLR：fXXXX_sYY_llr_idxIIIIII.bin
-LLR_RE = re.compile(
-    r"f(?P<frame>\d+)_s(?P<slot>\d+)_llr_idx(?P<idx>\d+)\.bin"
-)
-
-# --------------------------------------------------------
-# 將 JSON 轉為 key-value txt（ldpctest_spx 使用格式）
-# --------------------------------------------------------
 def write_ldpc_cfg_txt(json_path, txt_path):
-    with open(json_path) as f:
+    with open(json_path, "r") as f:
         cfg = json.load(f)
-
-    # 寫入 key-value 格式
     with open(txt_path, "w") as f:
         for k, v in cfg.items():
             f.write(f"{k} {v}\n")
 
-    print(f"  [TXT] wrote {os.path.basename(txt_path)}")
 
-
-# --------------------------------------------------------
-# 掃描 RAW/ 目錄
-# --------------------------------------------------------
 def scan_raw_records():
-    fullgrid_files = []
-    txbits_files = []
-    ldpc_files = []
-    llr_files = []
+    fullgrid, txbits, llr, ldpc = [], [], [], []
 
-    # 掃描 bin (fullgrid + txbits + llr)
-    for f in glob(os.path.join(RAW_DIR, "*.bin")):
-        base = os.path.basename(f)
+    for p in glob(os.path.join(RAW_DIR, "*.bin")):
+        b = os.path.basename(p)
 
-        m = FULLGRID_RE.match(base)
+        m = FULLGRID_RE.match(b)
         if m:
-            info = m.groupdict()
-            info["path"] = f
-            fullgrid_files.append(info)
+            d = m.groupdict()
+            d["path"] = p
+            d["mtime"] = _mtime(p)
+            fullgrid.append(d)
             continue
 
-        m = TXBITS_RE.match(base)
+        m = TXBITS_RE.match(b)
         if m:
-            info = m.groupdict()
-            info["path"] = f
-            txbits_files.append(info)
+            d = m.groupdict()
+            d["path"] = p
+            d["mtime"] = _mtime(p)
+            txbits.append(d)
             continue
 
-        m = LLR_RE.match(base)
+        m = LLR_RE.match(b)
         if m:
-            info = m.groupdict()
-            info["path"] = f
-            llr_files.append(info)
+            d = m.groupdict()
+            d["path"] = p
+            d["mtime"] = _mtime(p)
+            llr.append(d)
             continue
 
-    # 掃描 JSON (ldpc cfg)
-    for j in glob(os.path.join(RAW_DIR, "*.json")):
-        base = os.path.basename(j)
-        m = LDPC_RE.match(base)
+    for p in glob(os.path.join(RAW_DIR, "*.json")):
+        b = os.path.basename(p)
+        m = LDPC_RE.match(b)
         if m:
-            info = m.groupdict()
-            info["path"] = j
-            ldpc_files.append(info)
+            d = m.groupdict()
+            d["path"] = p
+            d["mtime"] = _mtime(p)
+            ldpc.append(d)
 
-    return fullgrid_files, txbits_files, ldpc_files, llr_files
+    return fullgrid, txbits, llr, ldpc
 
 
-# --------------------------------------------------------
-# Bundling: fullgrid + txbits + ldpc + llr 都存在才打包
-# --------------------------------------------------------
+def pick_nearest_by_mtime(candidates, target_mtime):
+    # candidates: list of dict with ["mtime"]
+    return min(candidates, key=lambda x: abs(float(x["mtime"]) - float(target_mtime)))
+
+
 def bundle_records():
-    fullgrid_list, txbits_list, ldpc_list, llr_list = scan_raw_records()
+    fullgrid_list, txbits_list, llr_list, ldpc_list = scan_raw_records()
 
     print(f"Found {len(fullgrid_list)} fullgrid")
     print(f"Found {len(txbits_list)} txbits")
-    print(f"Found {len(ldpc_list)} ldpc cfg")
     print(f"Found {len(llr_list)} llr")
+    print(f"Found {len(ldpc_list)} ldpc cfg")
 
-    # txbits 依 frame 分組（跟以前一樣）
-    txbits_by_frame = {}
+    # group by (frame, slot)
+    tx_by_fs = {}
     for t in txbits_list:
-        frame = int(t["frame"])
-        txbits_by_frame.setdefault(frame, []).append(t)
+        key = (int(t["frame"]), int(t["slot"]))
+        tx_by_fs.setdefault(key, []).append(t)
 
-    # ldpc cfg 用 (frame, slot) 索引
-    ldpc_by_fs = {(int(c["frame"]), int(c["slot"])): c for c in ldpc_list}
-
-    # ★ llr 也用 (frame, slot) 分組，再根據 idx 找最近
     llr_by_fs = {}
     for l in llr_list:
-        frame = int(l["frame"])
-        slot = int(l["slot"])
-        llr_by_fs.setdefault((frame, slot), []).append(l)
+        key = (int(l["frame"]), int(l["slot"]))
+        llr_by_fs.setdefault(key, []).append(l)
 
-    total_bundled = 0
+    ldpc_by_fs = {}
+    for c in ldpc_list:
+        key = (int(c["frame"]), int(c["slot"]))
+        # 若同一 fs 有多個 ldpc json，取 mtime 最新（通常較合理）
+        if key not in ldpc_by_fs or float(c["mtime"]) > float(ldpc_by_fs[key]["mtime"]):
+            ldpc_by_fs[key] = c
+
+    total = 0
 
     for fg in fullgrid_list:
         frame = int(fg["frame"])
-        slot = int(fg["slot"])
+        slot  = int(fg["slot"])
         fg_idx = int(fg["idx"])
+        fg_mtime = float(fg["mtime"])
 
-        # 1. fullgrid 有了 → 找 txbits（同一 frame 中 idx 最接近）
-        if frame not in txbits_by_frame:
-            print(f"[SKIP] frame {frame} slot {slot}: missing txbits → skip")
+        fs_key = (frame, slot)
+
+        # 1) ldpc cfg 必須存在
+        if fs_key not in ldpc_by_fs:
+            print(f"[SKIP] f{frame} s{slot}: missing ldpc_cfg")
             continue
+        ldpc_info = ldpc_by_fs[fs_key]
 
-        candidates_tx = txbits_by_frame[frame]
-        best_tx = min(candidates_tx, key=lambda x: abs(int(x["idx"]) - fg_idx))
-
-        # 2. 找 LDPC cfg（frame + slot）
-        ldpc_key = (frame, slot)
-        if ldpc_key not in ldpc_by_fs:
-            print(f"[SKIP] frame {frame} slot {slot}: missing ldpc_cfg → skip")
+        # 2) llr 必須存在
+        if fs_key not in llr_by_fs or len(llr_by_fs[fs_key]) == 0:
+            print(f"[SKIP] f{frame} s{slot}: missing llr")
             continue
+        best_llr = pick_nearest_by_mtime(llr_by_fs[fs_key], fg_mtime)
 
-        ldpc_info = ldpc_by_fs[ldpc_key]
-
-        # 3. 找 LLR（frame + slot + idx 最接近）
-        if ldpc_key not in llr_by_fs:
-            print(f"[SKIP] frame {frame} slot {slot}: missing LLR → skip")
+        # 3) txbits 必須存在
+        if fs_key not in tx_by_fs or len(tx_by_fs[fs_key]) == 0:
+            print(f"[SKIP] f{frame} s{slot}: missing txbits")
             continue
+        best_tx = pick_nearest_by_mtime(tx_by_fs[fs_key], fg_mtime)
 
-        candidates_llr = llr_by_fs[ldpc_key]
-        best_llr = min(candidates_llr, key=lambda x: abs(int(x["idx"]) - fg_idx))
-
-        # 🎯 四件套齊全 -> 才 bundle
+        # 4) output
         out_dir = os.path.join(BUNDLE_DIR, f"f{frame:04d}_s{slot:02d}")
         os.makedirs(out_dir, exist_ok=True)
 
         fg_out = os.path.join(out_dir, "fullgrid.bin")
         tx_out = os.path.join(out_dir, "txbits.bin")
+        llr_out = os.path.join(out_dir, "oai_llr.bin")
         ldpc_json_out = os.path.join(out_dir, "ldpc_cfg.json")
-        ldpc_txt_out = os.path.join(out_dir, "ldpc_cfg.txt")
-        llr_out = os.path.join(out_dir, "oai_llr.bin")  # ★ 新增：標準化檔名
-        meta_out = os.path.join(out_dir, "meta.json")
+        ldpc_txt_out  = os.path.join(out_dir, "ldpc_cfg.txt")
+        meta_out      = os.path.join(out_dir, "meta.json")
 
-        # 複製檔案
         shutil.copy2(fg["path"], fg_out)
         shutil.copy2(best_tx["path"], tx_out)
-        shutil.copy2(ldpc_info["path"], ldpc_json_out)
         shutil.copy2(best_llr["path"], llr_out)
+        shutil.copy2(ldpc_info["path"], ldpc_json_out)
 
-        # 產生 ldpc_cfg.txt
         write_ldpc_cfg_txt(ldpc_json_out, ldpc_txt_out)
 
-        # 建 meta.json
         meta = {
             "frame": frame,
             "slot": slot,
             "fg_idx": fg_idx,
+            "fg_mtime": fg_mtime,
             "tx_idx": int(best_tx["idx"]),
+            "tx_mtime": float(best_tx["mtime"]),
             "llr_idx": int(best_llr["idx"]),
+            "llr_mtime": float(best_llr["mtime"]),
             "rnti": int(best_tx["rnti"]),
             "fullgrid_file": os.path.basename(fg["path"]),
             "txbits_file": os.path.basename(best_tx["path"]),
             "llr_file": os.path.basename(best_llr["path"]),
             "ldpc_cfg_file": os.path.basename(ldpc_info["path"]),
         }
-
         with open(meta_out, "w") as f:
             json.dump(meta, f, indent=2)
 
-        print(f"[OK] bundled f{frame:04d}_s{slot:02d}")
-        total_bundled += 1
+        print(f"[OK] bundled f{frame:04d}_s{slot:02d} (fg_idx={fg_idx}, tx_idx={meta['tx_idx']}, llr_idx={meta['llr_idx']})")
+        total += 1
 
-    print(f"\nDone. Total valid bundles: {total_bundled}")
+    print(f"\nDone. Total valid bundles: {total}")
 
 
 if __name__ == "__main__":
     bundle_records()
+
 
 

@@ -1,99 +1,64 @@
-/*
- * ldpctest_spx.c
- *
- * 專門給 SpikingRx 用的 LDPC decoder 小工具：
- *
- * 用法：
- *
- *   ldpctest_spx <infer_llr_int8.bin> <ldpc_cfg.txt> <decoded_bits.bin>
- *
- * 其中 <ldpc_cfg.txt> 格式為一行一個欄位，例如：
- *
- *   frame   278
- *   slot    11
- *   dlsch_id        0
- *   BG      1
- *   Zc      224
- *   A       9480
- *   C       2
- *   K       4928
- *   F       152
- *   G       14400
- *   Qm      2
- *   nb_layers       1
- *   rv_index        3
- *   tbslbrm 184424
- *   mcs     9
- *
- * 假設：
- *   - LLR 檔長度必為 G（你說「LLR always length == G」）。
- *   - G 是單一 TB、單 codeword 的總 LLR 數。
- *   - C 是 codeblock 數（segmentation）。
- *
- * 這個工具：
- *   1. 讀 cfg → 取出 BG, Zc, A, C, F, G, Qm, rv_index...
- *   2. 推出每個 codeblock 的 Kprime（含 CB-CRC、含 filler，不含 parity）。
- *   3. 假設每個 codeblock 的 rate-matched 輸入長度 E = G / C。
- *   4. 估計實際 code rate，對應到 OAI 的 decParams.R。
- *   5. 將 LLR 均分成 C 段，每段長度 E，逐段呼叫 OAI 的 LDPCdecoder。
- *   6. LDPCdecoder 輸出的 bit 仍為 bit-packed（1 byte 8 bit）→ 這裡展開成「1 bit → 1 byte 的 0/1」，
- *      依序寫到 decoded_bits.bin。
- *
- * 注意：
- *   - 輸出長度為 C * Kprime bytes（每個 codeblock Kprime bit 展開、一個 bit 一 byte）。
- *   - 還沒做「還原 TB 的 A bit」（也就是沒把所有 CB-CRC 去掉、filler 去掉再重組成 TB）。
- *     要做到這一步，建議你在這個骨架上對照 openair1/PHY/NR_UE_TRANSPORT/nr_dlsch_decoding.c 來補。
- */
-
+// openair1/PHY/CODING/TESTBENCH/ldpctest_spx.c
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
 #include <stdint.h>
-#include <math.h>
 #include <errno.h>
-#include <stdbool.h>   // <<< 新增：為了 bool
-#include <malloc.h>    // <<< 新增：為了 memalign / malloc16
+#include <stdbool.h>
+#include <math.h>
+#include <malloc.h>
 
 #include "assertions.h"
 #include "SIMULATION/TOOLS/sim.h"
 #include "common/config/config_userapi.h"
 #include "common/utils/load_module_shlib.h"
 #include "common/utils/LOG/log.h"
-#include "openair1/PHY/defs_nr_common.h"
-#include "PHY/CODING/nrLDPC_extern.h"
 
+#include "PHY/sse_intrin.h" // simde
+#include "nr_rate_matching.h" // nr_deinterleaving_ldpc + nr_rate_matching_ldpc_rx declarations
+
+#include "PHY/CODING/coding_extern.h"
+#include "PHY/CODING/coding_defs.h"
+#include "PHY/CODING/nrLDPC_extern.h"   // LDPCdecoder prototype + t_nrLDPC_dec_params
 #include "coding_unitary_defs.h"
 
 #ifndef malloc16
 #define malloc16(x) memalign(32, x)
 #endif
 
-#define MAX_BLOCK_LENGTH 8448
-#define MAX_SEGMENTS     MAX_NUM_DLSCH_SEGMENTS
-#define MAX_LLR_LEN      (68 * 384)  /* 跟原 ldpctest.c 相同的最大長度 */
+// Same style as segment decoder
+#define OAI_LDPC_DECODER_MAX_NUM_LLR 27000
 
-static ldpc_interface_t ldpc_toCompare;
+// For safety, BG1: 68*384 = 26112
+#define MAX_CB_BITS_BG1   (68 * 384)
+#define MAX_CB_BITS_BG2   (52 * 384)
+#define MAX_CB_BITS       (68 * 384)
+#define MAX_SEGMENTS      (MAX_NUM_DLSCH_SEGMENTS)
 
-/* 簡單 key-value 文字檔 parser：
- * 讀一行，例如 "BG\t1" 或 "BG 1" 或 "BG    1"
- * 用 sscanf("%127s %d", key, &val) 解析。
- */
+// ------------------------------------------------------------
+// Simple key-value cfg loader (your existing format)
+// ------------------------------------------------------------
 typedef struct {
   int frame;
   int slot;
   int dlsch_id;
-  int BG;
-  int Zc;
-  int A;
-  int C;
-  int K;
-  int F;
-  int G;
+
+  int BG;         // 1 or 2
+  int Zc;         // lifting size
+  int A;          // TB payload bits (no TB-CRC)
+  int C;          // number of codeblocks
+  int K;          // codeblock size at decoder output (OAI uses 22Z for BG1, 10Z for BG2)
+  int F;          // filler bits total (for this TB)
+  int G;          // total number of LLRs (rate-matched bits)
   int Qm;
   int nb_layers;
   int rv_index;
   int tbslbrm;
   int mcs;
+
+  // IMPORTANT: you must provide R used by OAI segment parameters
+  // (segment_decoder uses nrLDPC_TB_decoding_parameters->segments[r].R)
+  int R; // OAI code_rate_vec element, e.g. 23 for ~2/3 in your case
 } ldpc_cfg_t;
 
 static int load_ldpc_cfg_kv(const char *path, ldpc_cfg_t *cfg)
@@ -109,6 +74,7 @@ static int load_ldpc_cfg_kv(const char *path, ldpc_cfg_t *cfg)
   char line[256];
   char key[128];
   int val;
+
   while (fgets(line, sizeof(line), f)) {
     if (sscanf(line, "%127s %d", key, &val) != 2)
       continue;
@@ -128,29 +94,35 @@ static int load_ldpc_cfg_kv(const char *path, ldpc_cfg_t *cfg)
     else if (strcmp(key, "rv_index")   == 0) cfg->rv_index   = val;
     else if (strcmp(key, "tbslbrm")    == 0) cfg->tbslbrm    = val;
     else if (strcmp(key, "mcs")        == 0) cfg->mcs        = val;
+    else if (strcmp(key, "R")          == 0) cfg->R          = val;
   }
 
   fclose(f);
 
-  if (cfg->BG == 0 || cfg->Zc == 0 || cfg->A == 0 || cfg->C == 0 || cfg->G == 0) {
+  if (cfg->BG == 0 || cfg->Zc == 0 || cfg->A == 0 || cfg->C == 0 || cfg->G == 0 || cfg->K == 0) {
     fprintf(stderr,
-            "[CFG] invalid cfg: BG=%d Zc=%d A=%d C=%d G=%d (至少這幾個要有)\n",
-            cfg->BG, cfg->Zc, cfg->A, cfg->C, cfg->G);
+            "[CFG] invalid cfg: BG=%d Zc=%d A=%d C=%d G=%d K=%d\n",
+            cfg->BG, cfg->Zc, cfg->A, cfg->C, cfg->G, cfg->K);
+    return -1;
+  }
+
+  if (cfg->R == 0) {
+    fprintf(stderr,
+            "[CFG] missing R in cfg. You MUST write a line like: R 23\n"
+            "      (this is the OAI code_rate_vec element used in segment params)\n");
     return -1;
   }
 
   printf("[CFG] frame=%d slot=%d dlsch_id=%d\n", cfg->frame, cfg->slot, cfg->dlsch_id);
   printf("[CFG] BG=%d Zc=%d A=%d C=%d K=%d F=%d G=%d Qm=%d nb_layers=%d\n",
-         cfg->BG, cfg->Zc, cfg->A, cfg->C, cfg->K, cfg->F, cfg->G,
-         cfg->Qm, cfg->nb_layers);
-  printf("[CFG] rv_index=%d tbslbrm=%d mcs=%d\n",
-         cfg->rv_index, cfg->tbslbrm, cfg->mcs);
+         cfg->BG, cfg->Zc, cfg->A, cfg->C, cfg->K, cfg->F, cfg->G, cfg->Qm, cfg->nb_layers);
+  printf("[CFG] rv_index=%d tbslbrm=%d mcs=%d R=%d\n",
+         cfg->rv_index, cfg->tbslbrm, cfg->mcs, cfg->R);
 
   return 0;
 }
 
-/* 讀 LLR 檔，檢查長度 == cfg->G */
-static int8_t *load_llr_file(const char *path, const ldpc_cfg_t *cfg, int *out_len)
+static int8_t *load_llr_file(const char *path, int expected_len, int *out_len)
 {
   FILE *f = fopen(path, "rb");
   if (!f) {
@@ -171,21 +143,19 @@ static int8_t *load_llr_file(const char *path, const ldpc_cfg_t *cfg, int *out_l
   }
   rewind(f);
 
-  printf("[LLR] file bytes = %ld (expect G=%d)\n", len, cfg->G);
-  if (len != cfg->G) {
-    fprintf(stderr,
-            "[LLR] WARNING: file length (%ld) != G (%d)，會以檔案長度為準\n",
-            len, cfg->G);
+  printf("[LLR] file bytes = %ld (expect G=%d)\n", len, expected_len);
+  if (expected_len > 0 && len != expected_len) {
+    fprintf(stderr, "[LLR] WARNING: file length (%ld) != expected G (%d)\n", len, expected_len);
   }
 
-  int8_t *buf = (int8_t *)malloc(len);
+  int8_t *buf = (int8_t *)malloc((size_t)len);
   if (!buf) {
     fprintf(stderr, "[LLR] malloc(%ld) fail\n", len);
     fclose(f);
     return NULL;
   }
 
-  size_t n = fread(buf, 1, len, f);
+  size_t n = fread(buf, 1, (size_t)len, f);
   fclose(f);
 
   if (n != (size_t)len) {
@@ -198,169 +168,6 @@ static int8_t *load_llr_file(const char *path, const ldpc_cfg_t *cfg, int *out_l
   return buf;
 }
 
-/* 根據 A, C, F 推 Kprime（每個 codeblock 的 bits，含 CB-CRC & filler、不含 parity）
- * 3GPP 38.212 segmentation (簡化)：
- *   B      = A + 24            // TB 加 TB-CRC
- *   B'     = B + 24*C         // 每個 CB 再加 24-bit CRC
- *   C*K'   = B' + F           // F filler bits
- * → K' = (B' + F) / C
- */
-static int derive_Kprime(const ldpc_cfg_t *cfg)
-{
-  int A = cfg->A;
-  int C = cfg->C;
-  int F = cfg->F;
-
-  int B  = A + 24;
-  int Bp = B + 24 * C;
-  int numerator = Bp + F;
-
-  if (numerator % C != 0) {
-    fprintf(stderr,
-            "[DERIVE] (B' + F) = %d 不能整除 C=%d，Kprime 非整數，這組參數怪怪的\n",
-            numerator, C);
-    return -1;
-  }
-
-  int Kprime = numerator / C;
-  printf("[DERIVE] B=%d B'=%d F=%d → Kprime=%d (每個 codeblock 的 bits, 含 CB-CRC)\n",
-         B, Bp, F, Kprime);
-
-  /* 檢查 Kprime 是否符合 NR 限制 */
-  int Kcb = (cfg->BG == 1) ? 8448 : 3840;
-  if (Kprime > Kcb) {
-    fprintf(stderr,
-            "[DERIVE] Kprime=%d > Kcb=%d (BG=%d)，不符合規範\n",
-            Kprime, Kcb, cfg->BG);
-    /* 先警告，但仍回傳，讓你自己決定要不要硬 decode */
-  }
-
-  return Kprime;
-}
-
-/* 估計實際 code rate，選出 OAI 的 code_rate_vec index
- * 本函式會回傳 decParams.R 要填的值（code_rate_vec[R_ind]），以及 R_ind 本身。
- */
-static int pick_ldpc_R(const ldpc_cfg_t *cfg, int Kprime, int *out_R_ind)
-{
-  /* 每個 codeblock 的 E（rate-matched bits）暫時假設 = G / C */
-  if (cfg->C <= 0) {
-    fprintf(stderr, "[DERIVE] C=%d 不合理\n", cfg->C);
-    return -1;
-  }
-
-  if (cfg->G % cfg->C != 0) {
-    fprintf(stderr,
-            "[DERIVE] G=%d 不能整除 C=%d，暫時還是硬用整除（捨去餘數），請你之後再檢查\n",
-            cfg->G, cfg->C);
-  }
-
-  int E = cfg->G / cfg->C;
-  printf("[DERIVE] assume each CB has E=%d LLRs (G/C)\n", E);
-
-  if (E <= 0) {
-    fprintf(stderr, "[DERIVE] E=%d 不合理\n", E);
-    return -1;
-  }
-
-  /* 近似 code rate：有用 bits (Kprime-24) / E */
-  double R_eff = (double)(Kprime - 24) / (double)E;
-  printf("[DERIVE] effective code rate ~ (Kprime-24)/E = %.6f\n", R_eff);
-
-  /* OAI testbench 用的 code_rate_vec */
-  int code_rate_vec[8] = {15, 13, 25, 12, 23, 34, 56, 89};
-  /* 對應的 (nom_rate, denom_rate) 候選組合 */
-  double candidates[3];
-  int    cand_nom[3];
-  int    cand_den[3];
-
-  if (cfg->BG == 1) {
-    /* BG1 / K' > 3840: 支援 1/3, 2/3, 22/25 */
-    candidates[0] = 1.0/3.0;  cand_nom[0] = 1;  cand_den[0] = 3;
-    candidates[1] = 2.0/3.0;  cand_nom[1] = 2;  cand_den[1] = 3;
-    candidates[2] = 22.0/25.0; cand_nom[2] = 22; cand_den[2] = 25;
-  } else {
-    /* BG2: 支援 1/5, 1/3, 2/3 */
-    candidates[0] = 1.0/5.0;  cand_nom[0] = 1; cand_den[0] = 5;
-    candidates[1] = 1.0/3.0;  cand_nom[1] = 1; cand_den[1] = 3;
-    candidates[2] = 2.0/3.0;  cand_nom[2] = 2; cand_den[2] = 3;
-  }
-
-  /* 找最接近 R_eff 的一組 */
-  double best_diff = 1e9;
-  int best_nom = cand_nom[0];
-  int best_den = cand_den[0];
-
-  for (int i = 0; i < 3; i++) {
-    double diff = fabs(R_eff - candidates[i]);
-    if (diff < best_diff) {
-      best_diff = diff;
-      best_nom = cand_nom[i];
-      best_den = cand_den[i];
-    }
-  }
-
-  printf("[DERIVE] choose code rate approx %d/%d (diff=%.6f)\n", best_nom, best_den, best_diff);
-
-  /* 用原 ldpctest.c 的 mapping 算 R_ind */
-  int R_ind = -1;
-  int nom_rate  = best_nom;
-  int denom_rate = best_den;
-  int BG = cfg->BG;
-  bool error = false;
-
-  switch (nom_rate) {
-    case 1:
-      if (denom_rate == 5)
-        if (BG == 2)
-          R_ind = 0;  /* 1/5, BG2 */
-        else
-          error = true;
-      else if (denom_rate == 3)
-        R_ind = 1;    /* 1/3 */
-      else if (denom_rate == 2)
-        error = true;
-      else
-        error = true;
-      break;
-
-    case 2:
-      if (denom_rate == 5)
-        error = true;
-      else if (denom_rate == 3)
-        R_ind = 4;    /* 2/3 */
-      else
-        error = true;
-      break;
-
-    case 22:
-      if (denom_rate == 25 && BG == 1)
-        R_ind = 7;    /* 22/25, BG1 */
-      else
-        error = true;
-      break;
-
-    default:
-      error = true;
-  }
-
-  if (error || R_ind < 0) {
-    fprintf(stderr,
-            "[DERIVE] 無法將 nom_rate=%d denom_rate=%d BG=%d 映射到 R_ind（ldpctest 的規則），請你之後再檢查\n",
-            nom_rate, denom_rate, BG);
-    return -1;
-  }
-
-  printf("[DERIVE] mapped to R_ind=%d → code_rate_vec[R_ind]=%d\n",
-         R_ind, code_rate_vec[R_ind]);
-
-  if (out_R_ind)
-    *out_R_ind = R_ind;
-
-  return code_rate_vec[R_ind];
-}
-
-/* 將 decoder 輸出的 bit-packed bytes 展開成「1 bit → 1 byte 的 0/1」 */
 static void unpack_bits_to_bytes(const uint8_t *packed, int n_bits, uint8_t *out_bytes)
 {
   for (int i = 0; i < n_bits; i++) {
@@ -369,7 +176,87 @@ static void unpack_bits_to_bytes(const uint8_t *packed, int n_bits, uint8_t *out
   }
 }
 
-/* main：ldpctest_spx */
+// Reconstruct TB payload bits (A bits) from CB bits (each CB length K bits)
+// Logic matches 38.212 segmentation:
+// - B  = A + 24 (TB-CRC)
+// - B' = B + 24*C (CB-CRC per CB)
+// - Kplus = ceil(B'/C), Kminus=floor(B'/C), Cminus=C*Kplus - B'
+// - For each CB r: Kr = (r < Cminus)?Kminus:Kplus
+// - Filler in CB = Fr = K - Kr  (K is 22Z or 10Z; Kr is actual data length incl CB-CRC)
+// - Drop first Fr bits (filler), drop last 24 bits (CB-CRC), append remaining (Kr-24) bits into TB
+static int reconstruct_tb_payload_bits(const ldpc_cfg_t *cfg,
+                                       const uint8_t *cb_bits, // length C*K (1 bit -> 1 byte)
+                                       uint8_t *tb_payload_out) // length A
+{
+  const int C = cfg->C;
+  const int A = cfg->A;
+  const int K = cfg->K;
+
+  const int B  = A + 24;
+  const int Bp = B + 24 * C;
+
+  const int Kplus  = (Bp + C - 1) / C;
+  const int Kminus = Bp / C;
+  const int Cminus = C * Kplus - Bp;
+
+  printf("[TB] B=%d B'=%d, Kplus=%d Kminus=%d Cminus=%d\n",
+         B, Bp, Kplus, Kminus, Cminus);
+
+  uint8_t *tb_with_crc = (uint8_t *)malloc((size_t)B);
+  if (!tb_with_crc) {
+    fprintf(stderr, "[TB] malloc(B=%d) fail\n", B);
+    return -1;
+  }
+
+  int tb_idx = 0;
+
+  for (int r = 0; r < C; r++) {
+    const int Kr = (r < Cminus) ? Kminus : Kplus; // includes CB-CRC
+    const int Fr = K - Kr;                        // filler bits count in this CB
+
+    if (Fr < 0) {
+      fprintf(stderr, "[TB] negative filler: r=%d Fr=%d (K=%d Kr=%d)\n", r, Fr, K, Kr);
+      free(tb_with_crc);
+      return -1;
+    }
+    if (Kr <= 24) {
+      fprintf(stderr, "[TB] Kr<=24 invalid: r=%d Kr=%d\n", r, Kr);
+      free(tb_with_crc);
+      return -1;
+    }
+
+    const uint8_t *cb = cb_bits + r * K;
+
+    const uint8_t *info_with_cbcrc = cb + Fr;   // skip filler
+    const int payload_len = Kr - 24;            // drop CB-CRC (last 24 bits)
+
+    for (int i = 0; i < payload_len; i++) {
+      if (tb_idx >= B) {
+        fprintf(stderr, "[TB] overflow tb_idx=%d B=%d\n", tb_idx, B);
+        free(tb_with_crc);
+        return -1;
+      }
+      tb_with_crc[tb_idx++] = info_with_cbcrc[i];
+    }
+  }
+
+  if (tb_idx != B) {
+    fprintf(stderr, "[TB] assembled TB bits mismatch: expect B=%d, got %d\n", B, tb_idx);
+    free(tb_with_crc);
+    return -1;
+  }
+
+  // Output only A payload bits (drop TB-CRC)
+  memcpy(tb_payload_out, tb_with_crc, (size_t)A);
+  free(tb_with_crc);
+
+  printf("[TB] reconstructed TB payload bits = %d (A)\n", A);
+  return 0;
+}
+
+// ------------------------------------------------------------
+// MAIN
+// ------------------------------------------------------------
 configmodule_interface_t *uniqCfg = NULL;
 
 int main(int argc, char *argv[])
@@ -379,7 +266,7 @@ int main(int argc, char *argv[])
             "Usage: %s <infer_llr_int8.bin> <ldpc_cfg.txt> <decoded_bits.bin>\n",
             argv[0]);
     fprintf(stderr,
-            "  注意：cfg 檔為 key-value 文字格式（例如：BG 1, Zc 224, A 9480...）。\n");
+            "  cfg 為 key-value 文字檔，且必須包含 R（例如：R 23）。\n");
     return 1;
   }
 
@@ -387,215 +274,348 @@ int main(int argc, char *argv[])
   const char *cfg_path = argv[2];
   const char *out_path = argv[3];
 
-  printf("=== ldpctest_spx: SpikingRx → OAI LDPC decoder wrapper ===\n");
+  printf("=== ldpctest_spx: OAI-segment-decoder-equivalent LDPC decode ===\n");
 
-  /* 讀 cfg */
+  // Load cfg
   ldpc_cfg_t cfg;
   if (load_ldpc_cfg_kv(cfg_path, &cfg) != 0) {
     fprintf(stderr, "[MAIN] load_ldpc_cfg_kv fail\n");
     return 1;
   }
 
-  /* 讀 LLR */
+  // Load LLR int8 file
   int llr_len = 0;
-  int8_t *llr_buf = load_llr_file(llr_path, &cfg, &llr_len);
+  int8_t *llr_buf = load_llr_file(llr_path, cfg.G, &llr_len);
   if (!llr_buf) {
     fprintf(stderr, "[MAIN] load_llr_file fail\n");
     return 1;
   }
 
-  /* 推 Kprime */
-  int Kprime = derive_Kprime(&cfg);
-  if (Kprime <= 0) {
-    fprintf(stderr, "[MAIN] derive_Kprime fail\n");
-    free(llr_buf);
-    return 1;
-  }
-
-  /* 推 E (= 每個 codeblock 的 LLR 數量) */
   if (cfg.C <= 0) {
-    fprintf(stderr, "[MAIN] cfg.C=%d 不合理\n", cfg.C);
+    fprintf(stderr, "[MAIN] invalid C=%d\n", cfg.C);
     free(llr_buf);
     return 1;
   }
 
-  int E = llr_len / cfg.C;
-  if (E <= 0) {
-    fprintf(stderr,
-            "[MAIN] E=llr_len/C = %d 不合理 (llr_len=%d C=%d)\n",
-            E, llr_len, cfg.C);
-    free(llr_buf);
-    return 1;
+  if (llr_len % cfg.C != 0) {
+    fprintf(stderr, "[MAIN] WARNING: llr_len=%d not divisible by C=%d. Using floor.\n", llr_len, cfg.C);
   }
 
-  if (E > MAX_LLR_LEN) {
-    fprintf(stderr,
-            "[MAIN] E=%d > MAX_LLR_LEN=%d，需要調整 MAX_LLR_LEN\n",
-            E, MAX_LLR_LEN);
-    free(llr_buf);
-    return 1;
-  }
+  const int E = llr_len / cfg.C;
+  printf("[MAIN] split: C=%d, each segment E=%d LLRs\n", cfg.C, E);
 
-  printf("[MAIN] splitted: C=%d, each CB has E=%d LLRs\n", cfg.C, E);
-
-  /* 選 decParams.R */
-  int R_ind = -1;
-  int R_val = pick_ldpc_R(&cfg, Kprime, &R_ind);
-  if (R_val < 0) {
-    fprintf(stderr, "[MAIN] pick_ldpc_R fail\n");
-    free(llr_buf);
-    return 1;
-  }
-
-  /* 初始化 OAI config & log */
+  // Init OAI config/log (required by some OAI utilities)
   if ((uniqCfg = load_configmodule(argc, argv, CONFIG_ENABLECMDLINEONLY)) == 0) {
     exit_fun("[ldpctest_spx] Error, configuration module init failed\n");
   }
   logInit();
 
-  /* 載入 LDPC shared library（跟原 ldpctest.c 相同用法） */
-  load_LDPClib("", &ldpc_toCompare);  /* ""：預設版本 */
+  // Decoder params: replicate segment_decoder usage
+  t_nrLDPC_dec_params decParams = {0};
+  decParams.check_crc = check_crc;
+  decParams.BG = (uint8_t)cfg.BG;
+  decParams.Z  = (uint16_t)cfg.Zc;
+  decParams.R  = 23;       // MUST come from cfg (OAI segment param)
+  decParams.numMaxIter = 25;
+  decParams.outMode = 0;               // EXACTLY like segment_decoder (decParams.outMode = 0)
 
-  /* 建 decoder profile & abort flag */
-  t_nrLDPC_time_stats decoder_profiler = {0};
-  reset_meas(&decoder_profiler.llr2llrProcBuf);
-  reset_meas(&decoder_profiler.llr2CnProcBuf);
-  reset_meas(&decoder_profiler.cnProc);
-  reset_meas(&decoder_profiler.cnProcPc);
-  reset_meas(&decoder_profiler.bnProc);
-  reset_meas(&decoder_profiler.bnProcPc);
-  reset_meas(&decoder_profiler.cn2bnProcBuf);
-  reset_meas(&decoder_profiler.bn2cnProcBuf);
-  reset_meas(&decoder_profiler.llrRes2llrOut);
-  reset_meas(&decoder_profiler.llr2bit);
+  // Compute Kc as in segment_decoder
+  const uint8_t Kc = (decParams.BG == 2) ? 52 : 68;
+
+  const int K = cfg.K;
+  const int Z = cfg.Zc;
+
+  // Basic sanity
+  if (K <= 0 || Z <= 0) {
+    fprintf(stderr, "[MAIN] invalid K=%d Z=%d\n", K, Z);
+    free(llr_buf);
+    logTerm();
+    return 1;
+  }
+  if (Kc * Z > MAX_CB_BITS) {
+    fprintf(stderr, "[MAIN] Kc*Z=%d exceeds MAX_CB_BITS=%d\n", Kc * Z, MAX_CB_BITS);
+    free(llr_buf);
+    logTerm();
+    return 1;
+  }
+
+  // Allocate per segment buffers and outputs
+  // - segment_decoder uses "short *llr" and "int16_t harq_e[E]" on stack
+  // We'll allocate dynamically to avoid huge stack.
+  short  *ulsch_llr = (short *)malloc((size_t)E * sizeof(short));
+  int16_t *harq_e   = (int16_t *)malloc((size_t)E * sizeof(int16_t));
+  if (!ulsch_llr || !harq_e) {
+    fprintf(stderr, "[MAIN] malloc for ulsch_llr/harq_e failed\n");
+    free(llr_buf);
+    free(ulsch_llr);
+    free(harq_e);
+    logTerm();
+    return 1;
+  }
+
+  // Ncb calculation is internal to nr_rate_matching_ldpc_rx, but we need buffer d[]
+  // We can compute Ncb here exactly like nr_rate_matching does:
+  const uint32_t N = (cfg.BG == 1) ? (66 * (uint32_t)Z) : (50 * (uint32_t)Z);
+  uint32_t Ncb;
+  if (cfg.tbslbrm == 0) {
+    Ncb = N;
+  } else {
+    // R_LBRM = 2/3 => Nref = 3*Tbslbrm/(2*C)
+    uint32_t Nref = (3 * (uint32_t)cfg.tbslbrm) / (2 * (uint32_t)cfg.C);
+    Ncb = (N < Nref) ? N : Nref;
+  }
+  printf("[MAIN] BG=%d Z=%d => N=%u, tbslbrm=%d => Ncb=%u\n", cfg.BG, Z, N, cfg.tbslbrm, Ncb);
+
+  // d buffer per segment (for soft combining)
+  int16_t *d_buf[MAX_SEGMENTS] = {0};
+  bool d_to_be_cleared[MAX_SEGMENTS] = {0};
+
+  if (cfg.C > MAX_SEGMENTS) {
+    fprintf(stderr, "[MAIN] C=%d exceeds MAX_SEGMENTS=%d\n", cfg.C, MAX_SEGMENTS);
+    free(llr_buf);
+    free(ulsch_llr);
+    free(harq_e);
+    logTerm();
+    return 1;
+  }
+
+  for (int r = 0; r < cfg.C; r++) {
+    d_buf[r] = (int16_t *)malloc((size_t)Ncb * sizeof(int16_t));
+    if (!d_buf[r]) {
+      fprintf(stderr, "[MAIN] malloc d_buf[%d] Ncb=%u failed\n", r, Ncb);
+      for (int k = 0; k < r; k++) free(d_buf[k]);
+      free(llr_buf);
+      free(ulsch_llr);
+      free(harq_e);
+      logTerm();
+      return 1;
+    }
+    d_to_be_cleared[r] = true; // first time clear
+  }
+
+  // Output packed CB bits: each CB output is K bits => K/8 bytes
+  const int cb_packed_bytes = (K >> 3);
+  uint8_t *c_packed[MAX_SEGMENTS] = {0};
+  for (int r = 0; r < cfg.C; r++) {
+    c_packed[r] = (uint8_t *)malloc((size_t)cb_packed_bytes);
+    if (!c_packed[r]) {
+      fprintf(stderr, "[MAIN] malloc c_packed[%d] failed\n", r);
+      for (int k = 0; k < cfg.C; k++) {
+        if (d_buf[k]) free(d_buf[k]);
+        if (c_packed[k]) free(c_packed[k]);
+      }
+      free(llr_buf);
+      free(ulsch_llr);
+      free(harq_e);
+      logTerm();
+      return 1;
+    }
+    memset(c_packed[r], 0, (size_t)cb_packed_bytes);
+  }
+
+  // Timing structs (minimal)
+  time_stats_t ts_deinterleave = {0};
+  time_stats_t ts_rate_unmatch = {0};
+  time_stats_t ts_ldpc_decode  = {0};
+  reset_meas(&ts_deinterleave);
+  reset_meas(&ts_rate_unmatch);
+  reset_meas(&ts_ldpc_decode);
+
+  t_nrLDPC_time_stats procTime = {0};
+  t_nrLDPC_time_stats *p_procTime = &procTime;
 
   decode_abort_t dec_abort;
   init_abort(&dec_abort);
 
-  /* 建 decParams（每個 segment 一個） */
-  if (cfg.C > MAX_SEGMENTS) {
-    fprintf(stderr,
-            "[MAIN] cfg.C=%d > MAX_SEGMENTS=%d，請調大 MAX_SEGMENTS\n",
-            cfg.C, MAX_SEGMENTS);
-    free(llr_buf);
-    return 1;
-  }
+  // --------------------------
+  // Per-segment decode (clone nr_process_decode_segment)
+  // --------------------------
+  for (int r = 0; r < cfg.C; r++) {
+    printf("[DEC] segment %d/%d\n", r, cfg.C);
 
-  t_nrLDPC_dec_params decParams[MAX_SEGMENTS];
-  memset(decParams, 0, sizeof(decParams));
-
-  for (int j = 0; j < cfg.C; j++) {
-    decParams[j].BG         = (uint8_t)cfg.BG;
-    decParams[j].Z          = (uint16_t)cfg.Zc;
-    decParams[j].R          = (uint8_t)R_val;     /* code_rate_vec[R_ind] */
-    decParams[j].numMaxIter = 25;                 /* 你可以自己改，預設 25 次 */
-    decParams[j].outMode    = nrLDPC_outMode_BIT; /* decoder 輸出 bit-packed 到 byte 陣列 */
-    decParams[j].Kprime     = (uint16_t)Kprime;
-
-    printf("[MAIN] decParams[%d]: BG=%d Z=%d R(code_rate)=%d Kprime=%d numMaxIter=%d\n",
-           j,
-           decParams[j].BG,
-           decParams[j].Z,
-           decParams[j].R,
-           decParams[j].Kprime,
-           decParams[j].numMaxIter);
-  }
-
-  /* 準備 LLR segment buffer（每個 segment 一個 array） */
-  static int8_t llr_seg[MAX_SEGMENTS][MAX_LLR_LEN];
-
-  for (int j = 0; j < cfg.C; j++) {
-    memcpy(llr_seg[j], llr_buf + j * E, E);
-    /* 如果 decoder 內部預期長度 > E，就只會用到前 E 個；
-       剩下的這裡先用 0 補，避免亂值。 */
-    if (E < MAX_LLR_LEN) {
-      memset(llr_seg[j] + E, 0, MAX_LLR_LEN - E);
+    // ulsch_llr (short) is the input to nr_deinterleaving_ldpc
+    // fill from int8 file slice
+    const int8_t *src = llr_buf + r * E;
+    for (int i = 0; i < E; i++) {
+      ulsch_llr[i] = (short)src[i];
     }
-  }
 
-  /* 準備 decoder 輸出：bit-packed，大小給到 Kprime bits → Kprime/8 bytes 足夠，
-   * 為了簡單直接開 Kprime bytes（一定足以容納 bit-packed），不會出問題。
-   */
-  uint8_t est_packed[MAX_SEGMENTS][MAX_BLOCK_LENGTH] = {{0}};
+    // --- deinterleaving ---
+    start_meas(&ts_deinterleave);
+    nr_deinterleaving_ldpc((uint32_t)E, (uint8_t)cfg.Qm, harq_e, (int16_t *)ulsch_llr);
+    stop_meas(&ts_deinterleave);
 
-  /* 呼叫 LDPCdecoder（一次 init，之後每個 segment decode） */
-  ldpc_toCompare.LDPCinit();
+    // --- rate unmatching ---
+    start_meas(&ts_rate_unmatch);
 
-  int32_t total_iter = 0;
+    // EXACTLY the same Foffset expression from segment_decoder:
+    // Foffset = K - F - 2*Z
+    const uint32_t Foffset = (uint32_t)(K - cfg.F - 2 * Z);
 
-  for (int j = 0; j < cfg.C; j++) {
-    printf("[DEC] Segment %d / %d: calling LDPCdecoder()...\n", j, cfg.C);
+    int ret = nr_rate_matching_ldpc_rx((uint32_t)cfg.tbslbrm,
+                                       (uint8_t)cfg.BG,
+                                       (uint16_t)Z,
+                                       d_buf[r],
+                                       harq_e,
+                                       (uint8_t)cfg.C,
+                                       (uint8_t)cfg.rv_index,
+                                       d_to_be_cleared[r] ? 1 : 0,
+                                       (uint32_t)E,
+                                       (uint32_t)cfg.F,
+                                       (uint32_t)Foffset);
+    stop_meas(&ts_rate_unmatch);
+
+    if (ret == -1) {
+      fprintf(stderr, "[DEC] nr_rate_matching_ldpc_rx failed on segment %d\n", r);
+      goto cleanup_fail;
+    }
+    d_to_be_cleared[r] = false;
+
+    // Set crc_type / Kprime EXACTLY like segment_decoder
+    // NOTE: these functions are from OAI coding helpers
+    decParams.crc_type = crcType((uint32_t)cfg.C, (uint32_t)cfg.A);
+    decParams.Kprime   = (uint16_t)lenWithCrc((uint32_t)cfg.C, (uint32_t)cfg.A);
+
+    // --- build z[] and saturate to int8 l[] EXACTLY like segment_decoder ---
+    int16_t zbuf[MAX_CB_BITS + 16] __attribute__((aligned(16)));
+    int8_t  lbuf[MAX_CB_BITS + 16] __attribute__((aligned(16)));
+    memset(zbuf, 0, sizeof(zbuf));
+    memset(lbuf, 0, sizeof(lbuf));
+
+    start_meas(&ts_ldpc_decode);
+
+    // local variables exactly like segment_decoder
+    const int Kprime = K - cfg.F;
+
+    // set first 2*Z bits to zero
+    memset(zbuf, 0, (size_t)(2 * Z) * sizeof(*zbuf));
+
+    // set filler bits (127) at z + Kprime, length F
+    memset(zbuf + Kprime, 127, (size_t)cfg.F * sizeof(*zbuf));
+
+    // Move coded bits before filler bits:
+    // memcpy(z + 2Z, d, (Kprime - 2Z))
+    if (Kprime < 2 * Z) {
+      fprintf(stderr, "[DEC] invalid: Kprime=%d < 2Z=%d\n", Kprime, 2 * Z);
+      stop_meas(&ts_ldpc_decode);
+      goto cleanup_fail;
+    }
+    memcpy(zbuf + 2 * Z, d_buf[r], (size_t)(Kprime - 2 * Z) * sizeof(*zbuf));
+
+    // skip filler bits:
+    // memcpy(z + K, d + (K - 2Z), (Kc*Z - K))
+    if (Kc * Z < K) {
+      fprintf(stderr, "[DEC] invalid: Kc*Z=%d < K=%d\n", Kc * Z, K);
+      stop_meas(&ts_ldpc_decode);
+      goto cleanup_fail;
+    }
+    memcpy(zbuf + K,
+           d_buf[r] + (K - 2 * Z),
+           (size_t)(Kc * Z - K) * sizeof(*zbuf));
+
+    // Saturate coded bits into 8-bit values
+    simde__m128i *pv = (simde__m128i *)&zbuf;
+    simde__m128i *pl = (simde__m128i *)&lbuf;
+
+    // Same loop form as segment_decoder
+    for (int i = 0, j = 0; j < ((Kc * Z) >> 4) + 1; i += 2, j++) {
+      pl[j] = simde_mm_packs_epi16(pv[i], pv[i + 1]);
+    }
+
+    // --- LDPCdecoder (DIRECT call, like segment_decoder) ---
+    int8_t llrProcBuf[OAI_LDPC_DECODER_MAX_NUM_LLR] __attribute__((aligned(32)));
+    memset(llrProcBuf, 0, sizeof(llrProcBuf));
 
     set_abort(&dec_abort, false);
 
-    int32_t n_iter = ldpc_toCompare.LDPCdecoder(&decParams[j],
-                                                (int8_t *)llr_seg[j],
-                                                (int8_t *)est_packed[j],
-                                                &decoder_profiler,
-                                                &dec_abort);
+    int decodeIterations = LDPCdecoder(&decParams, lbuf, llrProcBuf, p_procTime, &dec_abort);
 
-    printf("[DEC] Segment %d: LDPCdecoder() returned n_iter = %d\n", j, n_iter);
-
-    if (n_iter < 0) {
-      fprintf(stderr,
-              "[DEC] LDPCdecoder() failed for segment %d, ret=%d\n",
-              j, n_iter);
-      free(llr_buf);
-      return 1;
+    if (decodeIterations < decParams.numMaxIter) {
+      memcpy(c_packed[r], llrProcBuf, (size_t)cb_packed_bytes);
+      printf("[DEC] segment %d: success, iters=%d\n", r, decodeIterations);
+    } else {
+      memset(c_packed[r], 0, (size_t)cb_packed_bytes);
+      printf("[DEC] segment %d: FAIL (hit max iters=%d)\n", r, decodeIterations);
     }
 
-    total_iter += n_iter;
+    stop_meas(&ts_ldpc_decode);
   }
 
-  printf("[DEC] average iterations per segment ~ %.2f\n",
-         (double)total_iter / (double)cfg.C);
-
-  /* 將所有 segment 的 packed bits 展開成「一 bit 一 byte」的 0/1 */
-  int total_bits = cfg.C * Kprime;
-  uint8_t *decoded_bits = (uint8_t *)malloc(total_bits);
-  if (!decoded_bits) {
-    fprintf(stderr, "[OUT] malloc(%d) for decoded_bits fail\n", total_bits);
-    free(llr_buf);
-    return 1;
+  // --------------------------
+  // Collect CB packed bits => unpack => TB payload reconstruction
+  // --------------------------
+  const int total_cb_bits = cfg.C * cfg.K;
+  uint8_t *decoded_cb_bits = (uint8_t *)malloc((size_t)total_cb_bits);
+  if (!decoded_cb_bits) {
+    fprintf(stderr, "[OUT] malloc decoded_cb_bits (%d) fail\n", total_cb_bits);
+    goto cleanup_fail;
   }
 
-  for (int j = 0; j < cfg.C; j++) {
-    unpack_bits_to_bytes(est_packed[j],
-                         Kprime,
-                         decoded_bits + j * Kprime);
+  for (int r = 0; r < cfg.C; r++) {
+    unpack_bits_to_bytes(c_packed[r], cfg.K, decoded_cb_bits + r * cfg.K);
   }
 
-  /* 寫出檔案 */
+  uint8_t *tb_payload = (uint8_t *)malloc((size_t)cfg.A);
+  if (!tb_payload) {
+    fprintf(stderr, "[OUT] malloc tb_payload (A=%d) fail\n", cfg.A);
+    free(decoded_cb_bits);
+    goto cleanup_fail;
+  }
+
+  if (reconstruct_tb_payload_bits(&cfg, decoded_cb_bits, tb_payload) != 0) {
+    fprintf(stderr, "[OUT] reconstruct TB failed\n");
+    free(decoded_cb_bits);
+    free(tb_payload);
+    goto cleanup_fail;
+  }
+
+  // Write A bits, 1 bit -> 1 byte (0/1)
   FILE *fo = fopen(out_path, "wb");
   if (!fo) {
-    fprintf(stderr,
-            "[OUT] open '%s' fail: %s\n", out_path, strerror(errno));
-    free(llr_buf);
-    free(decoded_bits);
-    return 1;
+    fprintf(stderr, "[OUT] open '%s' fail: %s\n", out_path, strerror(errno));
+    free(decoded_cb_bits);
+    free(tb_payload);
+    goto cleanup_fail;
   }
 
-  size_t nw = fwrite(decoded_bits, 1, total_bits, fo);
+  size_t nw = fwrite(tb_payload, 1, (size_t)cfg.A, fo);
   fclose(fo);
 
-  if (nw != (size_t)total_bits) {
-    fprintf(stderr,
-            "[OUT] fwrite only %zu/%d bytes\n", nw, total_bits);
-    free(llr_buf);
-    free(decoded_bits);
-    return 1;
+  if (nw != (size_t)cfg.A) {
+    fprintf(stderr, "[OUT] fwrite only %zu/%d bytes\n", nw, cfg.A);
+    free(decoded_cb_bits);
+    free(tb_payload);
+    goto cleanup_fail;
   }
 
-  printf("[OUT] wrote %d bits as %d bytes (1 bit → 1 byte) to '%s'\n",
-         total_bits, total_bits, out_path);
+  printf("[OUT] wrote TB payload A=%d bits (1 bit -> 1 byte) to '%s'\n", cfg.A, out_path);
 
+  free(decoded_cb_bits);
+  free(tb_payload);
+
+  // Cleanup
   free(llr_buf);
-  free(decoded_bits);
+  free(ulsch_llr);
+  free(harq_e);
+  for (int r = 0; r < cfg.C; r++) {
+    free(d_buf[r]);
+    free(c_packed[r]);
+  }
 
-  /* 清理 log/config module */
   loader_reset();
   logTerm();
-
   return 0;
+
+cleanup_fail:
+  free(llr_buf);
+  free(ulsch_llr);
+  free(harq_e);
+  for (int r = 0; r < cfg.C; r++) {
+    if (d_buf[r]) free(d_buf[r]);
+    if (c_packed[r]) free(c_packed[r]);
+  }
+  loader_reset();
+  logTerm();
+  return 1;
 }
 

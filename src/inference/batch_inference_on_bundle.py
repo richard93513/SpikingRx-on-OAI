@@ -203,12 +203,18 @@ def main():
         # -----------------------
         with torch.no_grad():
             llr_vec, aux = model(x)
+        # ===== 原本的 DEBUG（保留）=====
         print("[DEBUG] spike_rate_per_stage =")
         print(aux["spike_rate_per_stage"])
-
         print("[DEBUG] final_rate_mean =", aux["final_rate_mean"])
         print("[DEBUG] final_rate_std  =", aux["final_rate_std"])
-        # === DEBUG: Save float LLR ===
+
+        # ===== 成果證據用（新增，重點）=====
+        llr_np = llr_vec.cpu().numpy()
+        print("[RESULT] LLR length =", len(llr_np))
+        print("[RESULT] LLR[0:16] =", llr_np[:16])
+        # ==================================
+
         llr_float_path = os.path.join(bdir, "infer_llr_float.npy")
         np.save(llr_float_path, llr_vec.cpu().numpy())
         print("  → Saved float LLR for debug:", llr_float_path)
@@ -219,7 +225,7 @@ def main():
         llr_path = os.path.join(bdir, "infer_llr_int8.bin")
         save_llr_for_oai_decoder(llr_vec, llr_path, llr_clip=8.0, flip_sign=True, G=G)
         print(f"  → Saved LLR: {llr_path}")
-
+	
         # -----------------------
         # 呼叫 OAI ldpctest_spx
         # -----------------------
