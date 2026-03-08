@@ -1,68 +1,40 @@
-# =====================
 # Python Virtual Env
-# =====================
 .venv/
 venv/
 env/
-docs/
-# =====================
+
+# Local records / dumps
+spx_records/
+
+# Local bundles / archives
+*.bundle
+
 # Python Cache
-# =====================
 __pycache__/
 *.pyc
 *.pyo
 
-# =====================
 # Jupyter Notebook Cache
-# =====================
 .ipynb_checkpoints/
 
-# =====================
-# Data / Model / Dumps
-# =====================
-*.pt
-*.pth
-*.bin
-*.npy
-*.npz
-*.h5
-*.pickle
-*.pkl
-*.ckpt
-# OAI full-grid / IQ dumps
-dumps/
-fullgrid/
-*.iq
-*.dat
-
-# =====================
 # Logs / temporary
-# =====================
-logs/
 *.log
 *.tmp
 
-# =====================
-# Media
-# =====================
-# 允許 PNG / JPG 正常 push
-# 但 GIF 一律 ignore
-*.gif
-
-# =====================
 # IDE / Editor
-# =====================
 .vscode/
 .idea/
-spx_records/raw/
 
-# =====================
-# Bundle 中的大檔案（必須 ignore）
-# =====================
-spx_records/bundle/**/fullgrid*.bin
-spx_records/bundle/**/txbits.bin
-spx_records/bundle/**/oai_llr*.bin
-spx_records/bundle/**/infer_llr_*.bin
-spx_records/bundle/**/decoded_bits*.bin
-spx_records/bundle/**/llr_heatmap.png
-spx_records/bundle/**/spike_rate.png
+# Optional media ignore
+*.gif
+
+# Local model / array / binary outputs
+*.pth
+*.pt
+*.npy
+*.npz
+*.bin
+
+# Keep source code and notes tracked
+!docs/
+!docs/**

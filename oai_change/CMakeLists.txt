@@ -1955,13 +1955,37 @@ add_executable(ldpctest_spx
 )
 
 target_link_libraries(ldpctest_spx PRIVATE
-  # ★ 這行是關鍵：把 UTIL / SIMU / PHY_COMMON / PHY_NR_COMMON 變成一個 group
-  -Wl,--start-group UTIL SIMU PHY_COMMON PHY_NR_COMMON -Wl,--end-group
+  -Wl,--start-group
+    UTIL
+    SIMU
+    PHY_COMMON
+    PHY_NR_COMMON
+    ldpc_segment
+    ldpc
+  -Wl,--end-group
+  m pthread dl ${T_LIB}
+  -Wl,--whole-archive crc_byte -Wl,--no-whole-archive
+)
 
-  # POSIX / syslibs
-  m pthread dl shlib_loader ${T_LIB}
+# =======================================================
+#   SPX Rate-Unmatching Standalone (rmunmatch_spx)
+# =======================================================
+add_executable(rmunmatch_spx
+  ${OPENAIR1_DIR}/PHY/CODING/TESTBENCH/rmunmatch_spx.c
+  ${OPENAIR1_DIR}/PHY/CODING/nrLDPC_load.c
+)
 
-  # force link crc table (OAI 官方寫法)
+target_link_libraries(rmunmatch_spx PRIVATE
+  -Wl,--start-group
+    UTIL
+    SIMU
+    PHY_COMMON
+    PHY_NR_COMMON
+    PHY_NR_UE
+    ldpc_segment
+    ldpc
+  -Wl,--end-group
+  m pthread dl ${T_LIB}
   -Wl,--whole-archive crc_byte -Wl,--no-whole-archive
 )
 
