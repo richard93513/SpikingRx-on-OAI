@@ -1,3 +1,0 @@
-# SpikingRx-on-OAI training log
-# start_time = 2026-02-09T16:13:02.233430
-# columns: epoch  total_loss

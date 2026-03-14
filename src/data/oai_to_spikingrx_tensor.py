@@ -20,7 +20,7 @@
 #     例如: 14 × 2048
 #
 #  最終輸出:
-#     x: Tensor [1, T, 2, 32, 32]
+#     x: Tensor [1, T, 2, 32, 64]
 #     meta: dict（包含 frame, slot, first_sc, used_sc, n_sc_full 等）
 # -------------------------------------------------------------
 
@@ -36,7 +36,7 @@ import glob
 def load_oai_fullgrid(
     path: str,
     H_out: int = 32,
-    W_out: int = 32,
+    W_out: int = 64,
     T: int = 5,
     device: str = "cpu",
 ):
@@ -124,7 +124,7 @@ def load_oai_fullgrid(
     # 5) 頻域壓縮 W_raw → W_out
     # -------------------------------
     ratio = W_raw / float(W_out)
-    freq32 = np.zeros((H_raw, W_out), dtype=np.complex64)
+    freq_out = np.zeros((H_raw, W_out), dtype=np.complex64)
 
     for i in range(W_out):
         # 區間 [s, e)
@@ -141,14 +141,14 @@ def load_oai_fullgrid(
             # 若真的出現空區間，就直接取單點
             s = min(max(i, 0), W_raw - 1)
             e = s + 1
-        freq32[:, i] = grid_used[:, s:e].mean(axis=1)
+        freq_out[:, i] = grid_used[:, s:e].mean(axis=1)
 
     # -------------------------------
     # 6) 時域補零 H_raw → H_out
     # -------------------------------
     out = np.zeros((H_out, W_out), dtype=np.complex64)
     copy_H = min(H_raw, H_out)
-    out[:copy_H, :] = freq32[:copy_H, :]
+    out[:copy_H, :] = freq_out[:copy_H, :]
 
     # -------------------------------
     # 7) 轉成 (C=2, H_out, W_out)

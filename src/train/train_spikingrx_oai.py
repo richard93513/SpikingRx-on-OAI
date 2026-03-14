@@ -3,10 +3,12 @@
 
 import os
 import sys
+import random
 import datetime
+import numpy as np
 import torch
 import torch.nn as nn
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, random_split
 from tqdm import tqdm
 import matplotlib.pyplot as plt
 
@@ -21,167 +23,310 @@ for p in [SRC_DIR, DATA_DIR]:
 from data.dataset_oai_bundle import OAI_Bundle_Dataset
 from models.spikingrx_model import SpikingRxModel
 
+
 # -------------------------------------------------
-# 繪圖工具：每個 epoch 更新一次 train_loss.png
+# seed
 # -------------------------------------------------
-def plot_loss_curve(epoch_list, loss_list, out_path):
-    if len(epoch_list) == 0:
+def set_seed(seed=1234):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+
+
+# -------------------------------------------------
+# plot
+# -------------------------------------------------
+def plot_curve(epoch, train_list, val_list, title, ylabel, path):
+
+    if len(epoch) == 0:
         return
 
     plt.figure()
-    plt.plot(epoch_list, loss_list, marker="o")
+    plt.plot(epoch, train_list, marker="o", label="train")
+    plt.plot(epoch, val_list, marker="o", label="val")
     plt.xlabel("Epoch")
-    plt.ylabel("Total training loss (sum over batches)")
-    plt.title("SpikingRx-on-OAI Training Loss")
+    plt.ylabel(ylabel)
+    plt.title(title)
+    plt.legend()
     plt.grid(True)
     plt.tight_layout()
-    plt.savefig(out_path)
+    plt.savefig(path)
     plt.close()
 
 
+# -------------------------------------------------
+# metrics
+# -------------------------------------------------
+def compute_metrics(pred, target):
+
+    mse = torch.mean((pred - target) ** 2)
+    mae = torch.mean(torch.abs(pred - target))
+    sign = ((pred >= 0) == (target >= 0)).float().mean()
+
+    return {
+        "mse": float(mse.detach().cpu()),
+        "mae": float(mae.detach().cpu()),
+        "sign": float(sign.detach().cpu())
+    }
+
+
+# -------------------------------------------------
+# train epoch
+# -------------------------------------------------
+def train_epoch(model, loader, optimizer, device_conv):
+
+    model.train()
+
+    sum_norm_mse = 0
+    sum_raw_mse = 0
+    sum_raw_sign = 0
+    n = 0
+
+    pbar = tqdm(
+    loader,
+    ncols=110,
+    leave=False,
+    dynamic_ncols=True,
+)
+
+    for x, y, cfg, bdir in pbar:
+
+        x = x.to(device_conv)
+
+        # ----------------------
+        # normalize target
+        # ----------------------
+        y_mean = y.mean(dim=1, keepdim=True)
+        y_std = y.std(dim=1, keepdim=True)
+
+        y_norm = (y - y_mean) / (y_std + 1e-6)
+
+        # ----------------------
+        # forward
+        # ----------------------
+        pred_norm, aux = model(x)
+
+        loss = torch.mean((pred_norm - y_norm) ** 2)
+
+        optimizer.zero_grad()
+        loss.backward()
+        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+        optimizer.step()
+
+        # ----------------------
+        # denormalize prediction
+        # ----------------------
+        pred_raw = pred_norm * y_std + y_mean
+
+        norm_mse = torch.mean((pred_norm - y_norm) ** 2)
+
+        raw_metrics = compute_metrics(pred_raw, y)
+
+        sum_norm_mse += float(norm_mse)
+        sum_raw_mse += raw_metrics["mse"]
+        sum_raw_sign += raw_metrics["sign"]
+
+        n += 1
+
+        pbar.set_postfix_str(
+        f"norm_mse={float(norm_mse):.3f} raw_sign={raw_metrics['sign']:.3f}"
+        )
+
+    return {
+        "norm_mse": sum_norm_mse / n,
+        "raw_mse": sum_raw_mse / n,
+        "raw_sign": sum_raw_sign / n
+    }
+
+
+# -------------------------------------------------
+# val epoch
+# -------------------------------------------------
+@torch.no_grad()
+def val_epoch(model, loader, device_conv):
+
+    model.eval()
+
+    sum_norm_mse = 0
+    sum_raw_mse = 0
+    sum_raw_sign = 0
+    n = 0
+
+    for x, y, cfg, bdir in loader:
+
+        x = x.to(device_conv)
+
+        y_mean = y.mean(dim=1, keepdim=True)
+        y_std = y.std(dim=1, keepdim=True)
+
+        y_norm = (y - y_mean) / (y_std + 1e-6)
+
+        pred_norm, aux = model(x)
+
+        norm_mse = torch.mean((pred_norm - y_norm) ** 2)
+
+        pred_raw = pred_norm * y_std + y_mean
+
+        raw_metrics = compute_metrics(pred_raw, y)
+
+        sum_norm_mse += float(norm_mse)
+        sum_raw_mse += raw_metrics["mse"]
+        sum_raw_sign += raw_metrics["sign"]
+
+        n += 1
+
+    return {
+        "norm_mse": sum_norm_mse / n,
+        "raw_mse": sum_raw_mse / n,
+        "raw_sign": sum_raw_sign / n
+    }
+
+
+# -------------------------------------------------
+# train
+# -------------------------------------------------
 def train():
 
-    # -----------------------------
-    #  Log / 圖檔路徑
-    # -----------------------------
-    log_path = os.path.join(CURRENT_DIR, "train_log.txt")
-    fig_path = os.path.join(CURRENT_DIR, "train_loss.png")
+    set_seed()
 
-    # 先清空舊的 log（如果想保留歷史，可以改成 "a" 並不覆寫）
-    with open(log_path, "w") as f:
-        f.write("# SpikingRx-on-OAI training log\n")
-        f.write("# start_time = {}\n".format(datetime.datetime.now().isoformat()))
-        f.write("# columns: epoch  total_loss\n")
-
-    epoch_history = []
-    loss_history = []
-
-    # -----------------------------
-    #  Device 選擇
-    # -----------------------------
+    # -------------------------
+    # device
+    # -------------------------
     if torch.cuda.is_available():
-        print("[Device] CUDA GPU =", torch.cuda.get_device_name(0))
-        spk_device = torch.device("cuda")   # Spiking Blocks 在 GPU
+        print("[GPU]", torch.cuda.get_device_name(0))
+        device_conv = torch.device("cuda")
     else:
-        print("[Device] CPU only")
-        spk_device = torch.device("cpu")
+        device_conv = torch.device("cpu")
 
-    fc_device = torch.device("cpu")         # ReadoutANN 固定 CPU
-    label_device = torch.device("cpu")      # LLR label 也放 CPU
+    device_fc = torch.device("cpu")
 
-    # -----------------------------
-    # Dataset
-    # -----------------------------
+    # -------------------------
+    # dataset
+    # -------------------------
     dataset = OAI_Bundle_Dataset(
-        bundle_root="/home/richard93513/SpikingRx-on-OAI/spx_records/bundle",
-        limit=None,   # 如果要先小規模試，可以改成小一點的整數
+        "/home/richard93513/SpikingRx-on-OAI/spx_records/bundle"
     )
-    loader = DataLoader(dataset, batch_size=1, shuffle=True, num_workers=0)
 
-    # -----------------------------
-    # Model（spiking GPU + readout CPU）
-    # -----------------------------
+    n_total = len(dataset)
+    n_val = int(n_total * 0.15)
+    n_train = n_total - n_val
+
+    train_set, val_set = random_split(
+        dataset,
+        [n_train, n_val],
+        generator=torch.Generator().manual_seed(1234)
+    )
+
+    train_loader = DataLoader(train_set, batch_size=1, shuffle=True)
+    val_loader = DataLoader(val_set, batch_size=1)
+
+    print(f"[Dataset] total={n_total} train={n_train} val={n_val}")
+
+    # -------------------------
+    # model
+    # -------------------------
     model = SpikingRxModel(
         in_ch=2,
         base_ch=16,
         bits_per_symbol=2,
         beta=0.9,
         theta=0.5,
-        llr_temperature=1.0,
         out_bits=14400,
-        device_conv=spk_device,
-        device_fc=fc_device,
+        T=1,
+        device_conv=device_conv,
+        device_fc=device_fc,
     )
 
-    opt = torch.optim.Adam(model.parameters(), lr=1e-4)
-    loss_fn = nn.MSELoss()
+    optimizer = torch.optim.Adam(model.parameters(), lr=5e-4)
 
-    # -----------------------------
-    # Early Stopping
-    # -----------------------------
-    patience = 8            # 比原本 2 大很多，讓它有時間慢慢收斂
-    best_loss = float("inf")
+    # -------------------------
+    # training config
+    # -------------------------
+    max_epochs = 5
+    patience = 10
+
+    best_val = float("inf")
     no_improve = 0
-    best_path = os.path.join(CURRENT_DIR, "best_spikingrx_model.pth")
 
-    max_epochs = 80
-    print(f"\n[Start Training] max_epochs = {max_epochs}")
-    print(f"[LOG] loss log → {log_path}")
-    print(f"[LOG] loss figure → {fig_path}\n")
+    log_path = os.path.join(CURRENT_DIR, "train_log_norm.txt")
 
-    # -----------------------------
-    # Training Loop
-    # -----------------------------
+    with open(log_path, "w") as f:
+        f.write("epoch train_norm_mse val_norm_mse train_raw_mse val_raw_mse train_sign val_sign\n")
+
+    epoch_list = []
+    train_curve = []
+    val_curve = []
+
+    # -------------------------
+    # loop
+    # -------------------------
     for ep in range(1, max_epochs + 1):
-        model.train()   # 確保在 train 模式
-        total_loss = 0.0
 
-        pbar = tqdm(loader, desc=f"Epoch {ep}", ncols=100)
+        print(f"\n===== Epoch {ep} =====")
 
-        for x, y_llr, cfg, bdir in pbar:
-            # -------------------------
-            # 準備資料
-            # -------------------------
-            # x: [B, T, 2, 32, 32]，先丟到 spiking device（GPU 或 CPU）
-            x = x.to(spk_device)
+        train_stats = train_epoch(model, train_loader, optimizer, device_conv)
+        val_stats = val_epoch(model, val_loader, device_conv)
 
-            # labels 在 CPU
-            y_llr = y_llr.to(label_device)   # [B, G]，這裡 B=1
+        print(
+            f"[Train] norm_mse={train_stats['norm_mse']:.4f} "
+            f"raw_mse={train_stats['raw_mse']:.2f} "
+            f"sign={train_stats['raw_sign']:.3f}"
+        )
 
-            # -------------------------
-            # forward
-            # -------------------------
-            y_pred, aux = model(x)   # hybrid forward; y_pred 在 CPU（readoutANN）
+        print(
+            f"[Val]   norm_mse={val_stats['norm_mse']:.4f} "
+            f"raw_mse={val_stats['raw_mse']:.2f} "
+            f"sign={val_stats['raw_sign']:.3f}"
+        )
 
-            # -------------------------
-            # loss
-            # -------------------------
-            loss = loss_fn(y_pred, y_llr)
-
-            opt.zero_grad()
-            loss.backward()
-
-            # 避免梯度爆掉，稍微 clip 一下
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-
-            opt.step()
-
-            batch_loss = loss.item()
-            total_loss += batch_loss
-            pbar.set_postfix(loss=f"{batch_loss:.3f}")
-
-        # -----------------------------
-        # Epoch 結束 → 紀錄 / 畫圖 / early stopping
-        # -----------------------------
-        print(f"\n>>> Epoch {ep} Total Loss = {total_loss:.4f}")
-
-        # 寫入 log 檔
         with open(log_path, "a") as f:
-            f.write(f"{ep}\t{total_loss:.6f}\n")
+            f.write(
+                f"{ep} "
+                f"{train_stats['norm_mse']} "
+                f"{val_stats['norm_mse']} "
+                f"{train_stats['raw_mse']} "
+                f"{val_stats['raw_mse']} "
+                f"{train_stats['raw_sign']} "
+                f"{val_stats['raw_sign']}\n"
+            )
 
-        # 更新 history 並畫圖
-        epoch_history.append(ep)
-        loss_history.append(total_loss)
-        plot_loss_curve(epoch_history, loss_history, fig_path)
+        epoch_list.append(ep)
+        train_curve.append(train_stats["norm_mse"])
+        val_curve.append(val_stats["norm_mse"])
 
-        # Early stopping 判斷
-        if total_loss < best_loss:
-            best_loss = total_loss
+        plot_curve(
+            epoch_list,
+            train_curve,
+            val_curve,
+            "Normalized MSE",
+            "MSE",
+            os.path.join(CURRENT_DIR, "curve_norm_mse.png")
+        )
+
+        # early stopping
+        if val_stats["norm_mse"] < best_val:
+
+            best_val = val_stats["norm_mse"]
             no_improve = 0
-            torch.save(model.state_dict(), best_path)
-            print(f" ✓ Improved — saved best model ({best_loss:.4f})")
+
+            torch.save(
+                model.state_dict(),
+                os.path.join(CURRENT_DIR, "best_spikingrx_model_norm.pth")
+            )
+
+            print("✓ new best model")
+
         else:
+
             no_improve += 1
-            print(f" ✗ No improvement ({no_improve}/{patience})")
+            print(f"no improve {no_improve}/{patience}")
 
         if no_improve >= patience:
-            print("\n>>> EARLY STOPPING — Training Ended by patience.")
+            print("EARLY STOP")
             break
-
-    print("\nTraining finished.")
-    print("Best model saved at:", best_path)
 
 
 if __name__ == "__main__":
     train()
-
