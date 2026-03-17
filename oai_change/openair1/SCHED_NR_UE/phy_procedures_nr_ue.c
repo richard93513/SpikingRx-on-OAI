@@ -87,14 +87,6 @@ static const unsigned int gain_table[31] = {100,  112,  126,  141,  158,  178,  
                                             359,  398,  447,  501,  562,  631,  708,  794,  891, 1000, 1122,
                                             1258, 1412, 1585, 1778, 1995, 2239, 2512, 2818, 3162};
 
-static void spx_dump_i16_bin(const char *path, const int16_t *buf, int len)
-{
-  FILE *fp = fopen(path, "wb");
-  if (!fp) return;
-  fwrite(buf, sizeof(int16_t), len, fp);
-  fclose(fp);
-}
-
 static void spx_dump_pdsch_cfg(const char *path,
                                int frame_rx,
                                int nr_slot_rx,
@@ -103,7 +95,15 @@ static void spx_dump_pdsch_cfg(const char *path,
                                uint16_t rnti,
                                int G,
                                uint32_t dlDataScramblingId,
-                               uint32_t physCellId)
+                               uint32_t physCellId,
+                               uint16_t dlDmrsSymbPos,
+                               uint8_t dmrsConfigType,
+                               uint8_t n_dmrs_cdm_groups,
+                               uint16_t BWPStart,
+                               uint16_t start_rb,
+                               uint16_t number_rbs,
+                               uint16_t start_symbol,
+                               uint16_t number_symbols)
 {
   FILE *fp = fopen(path, "w");
   if (!fp) return;
@@ -116,6 +116,14 @@ static void spx_dump_pdsch_cfg(const char *path,
   fprintf(fp, "G %d\n", G);
   fprintf(fp, "dlDataScramblingId %u\n", dlDataScramblingId);
   fprintf(fp, "physCellId %u\n", physCellId);
+  fprintf(fp, "dlDmrsSymbPos %u\n", dlDmrsSymbPos);
+  fprintf(fp, "dmrsConfigType %u\n", dmrsConfigType);
+  fprintf(fp, "n_dmrs_cdm_groups %u\n", n_dmrs_cdm_groups);
+  fprintf(fp, "BWPStart %u\n", BWPStart);
+  fprintf(fp, "start_rb %u\n", start_rb);
+  fprintf(fp, "number_rbs %u\n", number_rbs);
+  fprintf(fp, "start_symbol %u\n", start_symbol);
+  fprintf(fp, "number_symbols %u\n", number_symbols);
 
   fclose(fp);
 }
@@ -940,31 +948,15 @@ static void nr_ue_dlsch_procedures(PHY_VARS_NR_UE *ue,
     unav_res += compute_csi_rm_unav_res(dlsch_config);
     G[DLSCH_id] = nr_get_G(dlsch_config->number_rbs, nb_symb_sch, nb_re_dmrs, dmrs_len, unav_res, dlsch_config->qamModOrder, dlsch[DLSCH_id].Nl);
 
-    char pre_path[512];
-    char post_path[512];
     char cfg_path[512];
     const char *home = getenv("HOME");
     if (!home) home = ".";
-
-    snprintf(pre_path, sizeof(pre_path),
-             "%s/SpikingRx-on-OAI/spx_records/raw/"
-             "f%04d_s%02d_ue_llr_preunscram_rnti%05u_harq%02d_cw%01d.bin",
-             home, frame_rx, nr_slot_rx,
-             dlsch[DLSCH_id].rnti, harq_pid, DLSCH_id);
-
-    snprintf(post_path, sizeof(post_path),
-             "%s/SpikingRx-on-OAI/spx_records/raw/"
-             "f%04d_s%02d_ue_llr_postunscram_rnti%05u_harq%02d_cw%01d.bin",
-             home, frame_rx, nr_slot_rx,
-             dlsch[DLSCH_id].rnti, harq_pid, DLSCH_id);
 
     snprintf(cfg_path, sizeof(cfg_path),
              "%s/SpikingRx-on-OAI/spx_records/raw/"
              "f%04d_s%02d_pdsch_cfg_rnti%05u_harq%02d_cw%01d.txt",
              home, frame_rx, nr_slot_rx,
              dlsch[DLSCH_id].rnti, harq_pid, DLSCH_id);
-
-    spx_dump_i16_bin(pre_path, llr[DLSCH_id], G[DLSCH_id]);
 
     spx_dump_pdsch_cfg(cfg_path,
                        frame_rx,
@@ -974,13 +966,19 @@ static void nr_ue_dlsch_procedures(PHY_VARS_NR_UE *ue,
                        dlsch[DLSCH_id].rnti,
                        G[DLSCH_id],
                        dlsch[DLSCH_id].dlsch_config.dlDataScramblingId,
-                       ue->frame_parms.Nid_cell);
+                       ue->frame_parms.Nid_cell,
+                       dlsch[DLSCH_id].dlsch_config.dlDmrsSymbPos,
+                       dlsch[DLSCH_id].dlsch_config.dmrsConfigType,
+                       dlsch[DLSCH_id].dlsch_config.n_dmrs_cdm_groups,
+                       dlsch[DLSCH_id].dlsch_config.BWPStart,
+                       dlsch[DLSCH_id].dlsch_config.start_rb,
+                       dlsch[DLSCH_id].dlsch_config.number_rbs,
+                       dlsch[DLSCH_id].dlsch_config.start_symbol,
+                       dlsch[DLSCH_id].dlsch_config.number_symbols);
 
     start_meas_nr_ue_phy(ue, DLSCH_UNSCRAMBLING_STATS);
     nr_dlsch_unscrambling(llr[DLSCH_id], G[DLSCH_id], 0, dlsch[DLSCH_id].dlsch_config.dlDataScramblingId, dlsch[DLSCH_id].rnti);
     stop_meas_nr_ue_phy(ue, DLSCH_UNSCRAMBLING_STATS);
-
-    spx_dump_i16_bin(post_path, llr[DLSCH_id], G[DLSCH_id]);
 
     p_b[DLSCH_id] = dl_harq->b;
   }

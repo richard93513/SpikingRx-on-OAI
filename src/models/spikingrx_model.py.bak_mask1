@@ -79,7 +79,7 @@ class ReadoutANN(nn.Module):
 class SpikingRxModel(nn.Module):
     def __init__(
         self,
-        in_ch: int = 4,
+        in_ch: int = 2,
         base_ch: int = 8,
         bits_per_symbol: int = 2,
         beta: float = 0.9,

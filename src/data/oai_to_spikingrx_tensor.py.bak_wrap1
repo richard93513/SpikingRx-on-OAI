@@ -1,11 +1,10 @@
 # src/data/oai_to_spikingrx_tensor.py
 # -*- coding: utf-8 -*-
 
-import glob
-import os
-
 import numpy as np
 import torch
+import os
+import glob
 
 
 def load_oai_fullgrid(
@@ -20,22 +19,10 @@ def load_oai_fullgrid(
     Read OAI full-grid dump and convert to tensor.
 
     Header:
-        uint16[8] =
-            frame, slot, start_symbol, n_sym,
-            first_sc, used_sc, number_symbols, G
+        uint16[8] = frame, slot, start_symbol, n_sym, first_sc, used_sc, rx_ant, cw
 
     Payload:
         n_sym * n_sc_full complex16 (I,Q)
-
-    Important:
-        OAI fullgrid dump payload is written as full FFT bins [n_sym, n_sc_full].
-        For NR, the actual occupied carrier region starts from frame_parms->first_carrier_offset
-        and wraps around circularly over the FFT.
-
-        Therefore, for keep_rect=True we MUST reorder by:
-            idx = (arange(used_sc) + first_carrier_offset) % n_sc_full
-        instead of the old wrong direct slice:
-            grid_full[:, first_sc:first_sc+used_sc]
 
     Returns:
         x: torch.FloatTensor
@@ -48,14 +35,14 @@ def load_oai_fullgrid(
         raise ValueError(f"[SPX][Loader] File too small: {path} (int16 count={raw.size})")
 
     header = raw[:8].view(np.uint16)
-    frame = int(header[0])
-    slot = int(header[1])
+    frame        = int(header[0])
+    slot         = int(header[1])
     start_symbol = int(header[2])
-    n_sym = int(header[3])
-    first_sc = int(header[4])
-    used_sc = int(header[5])
-    number_symbols = int(header[6])
-    G = int(header[7])
+    n_sym        = int(header[3])
+    first_sc     = int(header[4])
+    used_sc      = int(header[5])
+    rx_ant       = int(header[6])
+    cw           = int(header[7])
 
     iq_int16 = raw[8:]
     if iq_int16.size % 2 != 0:
@@ -73,28 +60,33 @@ def load_oai_fullgrid(
 
     iq_pair = iq_int16.reshape(-1, 2)
     cpx = iq_pair[:, 0].astype(np.float32) + 1j * iq_pair[:, 1].astype(np.float32)
-    grid_full = cpx.reshape(n_sym, n_sc_full)  # [14, 2048] typically
+    grid_full = cpx.reshape(n_sym, n_sc_full)  # [14, 2048]
 
     if used_sc <= 0 or used_sc > n_sc_full:
         default_used_sc = min(106 * 12, n_sc_full)
         used_sc = default_used_sc
+        first_sc = (n_sc_full - used_sc) // 2
         print(
             f"[SPX][Loader][WARN] invalid used_sc in header, fallback:"
-            f" used_sc={used_sc}, n_sc_full={n_sc_full}"
+            f" used_sc={used_sc}, first_sc={first_sc}, n_sc_full={n_sc_full}"
         )
 
-    # NR occupied carrier starts at first_carrier_offset, not at first_sc direct slicing.
-    # For standard NR init:
-    #   first_carrier_offset = ofdm_symbol_size - (N_RB_DL*12/2)
-    # Here used_sc == N_RB_DL*12, so:
-    first_carrier_offset = n_sc_full - (used_sc // 2)
+    last_sc = first_sc + used_sc
+    if first_sc < 0 or last_sc > n_sc_full:
+        used_sc = min(106 * 12, n_sc_full)
+        first_sc = (n_sc_full - used_sc) // 2
+        last_sc = first_sc + used_sc
+        print(
+            f"[SPX][Loader][WARN] first_sc/used_sc out of range, reset:"
+            f" first_sc={first_sc}, used_sc={used_sc}, n_sc_full={n_sc_full}"
+        )
 
-    idx = (np.arange(used_sc, dtype=np.int64) + first_carrier_offset) % n_sc_full
-    grid_used = grid_full[:, idx]  # [n_sym, used_sc], circularly reordered
+    grid_used = grid_full[:, first_sc:last_sc]  # [n_sym, used_sc]
 
     if keep_rect:
-        out = grid_used.astype(np.complex64)
+        out = grid_used.astype(np.complex64)  # [14, 1272] typically
     else:
+        # legacy mode: compress to H_out x W_out
         H_raw = n_sym
         W_raw = used_sc
 
@@ -137,9 +129,8 @@ def load_oai_fullgrid(
         "n_sc_full": n_sc_full,
         "first_sc": first_sc,
         "used_sc": used_sc,
-        "number_symbols": number_symbols,
-        "G": G,
-        "first_carrier_offset": first_carrier_offset,
+        "rx_ant": rx_ant,
+        "cw": cw,
         "out_h": H_final,
         "out_w": W_final,
         "keep_rect": keep_rect,
