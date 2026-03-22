@@ -82,27 +82,72 @@ class OAI_Bundle_Dataset(Dataset):
             if d.startswith("f") and os.path.isdir(os.path.join(bundle_root, d))
         )
 
-        # -------------------------------------------------
-        # Drop fixed PHY warm-up transient bundles
-        # Empirically, each run's first 6 bundles are non-steady-state:
-        #   fullgrid absmax ~= 338~340, then from bundle #7 onward ~= 263~265
-        # So we remove the first 6 bundles before any train/val split.
-        # -------------------------------------------------
-        num_warmup_drop = 6
         n_total_before_drop = len(dirs)
 
-        if len(dirs) > num_warmup_drop:
-            dirs = dirs[num_warmup_drop:]
+        # -------------------------------------------------
+        # Auto-detect PHY warm-up transient boundary
+        #
+        # Observation:
+        #   transient bundles: fullgrid absmax ~= 338~340,
+        #                      ratio(|x|>=280) ~= 0.07
+        #   steady-state:      fullgrid absmax ~= 263~265,
+        #                      ratio(|x|>=280) == 0
+        #
+        # We therefore find the first bundle whose cropped fullgrid has
+        # no samples with |x| >= 280, and only keep bundles from there on.
+        # -------------------------------------------------
+        def _is_steady_state_bundle(bundle_dir):
+            fg_path = os.path.join(bundle_dir, "fullgrid.bin")
+            if not os.path.exists(fg_path):
+                return False
+
+            raw = np.fromfile(fg_path, dtype=np.int16)
+            if raw.size < 8:
+                return False
+
+            hdr = raw[:8].view(np.uint16)
+            iq = raw[8:]
+
+            if iq.size != 14 * 2048 * 2:
+                return False
+
+            first_sc = int(hdr[4])
+            used_sc = int(hdr[5])
+
+            try:
+                iq = iq.reshape(14, 2048, 2)
+                crop = iq[:, first_sc:first_sc + used_sc, :].reshape(-1)
+            except Exception:
+                return False
+
+            ratio_ge_280 = float((np.abs(crop) >= 280).mean())
+            return ratio_ge_280 == 0.0
+
+        first_steady_idx = None
+        for i, d in enumerate(dirs):
+            bdir = os.path.join(bundle_root, d)
+            if _is_steady_state_bundle(bdir):
+                first_steady_idx = i
+                break
+
+        if first_steady_idx is None:
+            used_dirs = []
+            dropped = len(dirs)
         else:
-            dirs = []
+            used_dirs = dirs[first_steady_idx:]
+            dropped = first_steady_idx
 
         if limit is not None:
-            dirs = dirs[:limit]
+            used_dirs = used_dirs[:limit]
 
-        self.bundle_dirs = [os.path.join(bundle_root, d) for d in dirs]
+        self.bundle_dirs = [os.path.join(bundle_root, d) for d in used_dirs]
 
         print(f"[Dataset] Found {n_total_before_drop} bundles before warm-up drop")
-        print(f"[Dataset] Dropped first {min(num_warmup_drop, n_total_before_drop)} warm-up bundles")
+        print(f"[Dataset] Auto-detected warm-up drop = {dropped}")
+        if first_steady_idx is not None:
+            print(f"[Dataset] First steady-state bundle = {dirs[first_steady_idx]}")
+        else:
+            print("[Dataset] First steady-state bundle = NOT FOUND")
         print(f"[Dataset] Using {len(self.bundle_dirs)} bundles after warm-up drop")
         print(
             f"[Dataset] normalize={self.normalize} "
