@@ -14,6 +14,8 @@ UE:
   - f%04d_s%02d_ue_c_idx%06d_rnti%04x_dlsch%02d_harq%02d_round%02d_rv%d_seg%02d.bin
   - f%04d_s%02d_pdsch_cfg_rnti%05d_harq%02d_cw%d.txt
   - f%04d_s%02d_ldpc_rm_exact_idx%06d_tb%02d_rv%d_seg%02d_outlen%05d_i8.bin
+  - f%04d_s%02d_eqsymb_idx%06d_sym%02d_rnti%04x_harq%02d.bin
+  - f%04d_s%02d_chestext_idx%06d_sym%02d_rnti%04x_harq%02d.bin
 
 gNB:
   - f%04d_s%02d_txbits_idx%06d_rnti%04x_pdu%03d_rv%d_tbcrc%08x.bin
@@ -27,6 +29,8 @@ Notes
 - rm_exact uses tb=0 for current single-TB case.
 - pdsch_cfg is matched by (frame, slot, rnti, harq, cw),
   because that filename does not carry idx.
+- eqsymb/chestext are optional supervision side-files keyed by
+  (frame, slot, idx, rnti, harq, symbol).
 """
 
 import re
@@ -94,6 +98,55 @@ def load_kv_txt(p: Path) -> Dict[str, Any]:
     return out
 
 
+def expected_symbol_list_from_pdsch_cfg(pdsch_cfg_kv: Optional[Dict[str, Any]]) -> List[int]:
+    if not pdsch_cfg_kv:
+        return []
+    start_symbol = safe_int(pdsch_cfg_kv, "start_symbol", -1)
+    number_symbols = safe_int(pdsch_cfg_kv, "number_symbols", -1)
+    if start_symbol < 0 or number_symbols <= 0:
+        return []
+    return list(range(start_symbol, start_symbol + number_symbols))
+
+
+def copy_symbol_file_list(
+    src_map: Dict[int, Path],
+    out_dir: Path,
+    prefix: str,
+) -> List[str]:
+    """
+    Copy:
+      symbol -> source path
+    into standardized names:
+      {prefix}_symXX.bin
+    return copied dst filenames sorted by symbol.
+    """
+    copied: List[str] = []
+    for sym in sorted(src_map.keys()):
+        src = src_map[sym]
+        dst = out_dir / f"{prefix}_sym{sym:02d}.bin"
+        shutil.copy2(src, dst)
+        copied.append(dst.name)
+    return copied
+
+
+def check_symbol_completeness(
+    symbol_map: Dict[int, Path],
+    expected_symbols: List[int],
+) -> Tuple[bool, List[int], List[int]]:
+    """
+    Returns:
+      complete, expected_sorted, present_sorted
+    Rule:
+      - if expected_symbols empty -> complete = (len(symbol_map) > 0)
+      - else exact set match
+    """
+    present = sorted(symbol_map.keys())
+    expected = sorted(expected_symbols)
+    if not expected:
+        return (len(present) > 0, expected, present)
+    return (present == expected, expected, present)
+
+
 # -------------------------------------------------
 # Regex
 # -------------------------------------------------
@@ -123,6 +176,14 @@ RE_UE_PDSCH_CFG = re.compile(
 
 RE_UE_RM_EXACT = re.compile(
     r"^f(?P<frame>\d{4})_s(?P<slot>\d{2})_ldpc_rm_exact_idx(?P<idx>\d{6})_tb(?P<tb>\d{2})_rv(?P<rv>\d)_seg(?P<seg>\d{2})_outlen(?P<outlen>\d{5})_i8\.bin$"
+)
+
+RE_UE_EQSYMB = re.compile(
+    r"^f(?P<frame>\d{4})_s(?P<slot>\d{2})_eqsymb_idx(?P<idx>\d{6})_sym(?P<sym>\d{2})_rnti(?P<rnti>[0-9a-fA-F]{4}|\d{5})_harq(?P<harq>\d{2})\.bin$"
+)
+
+RE_UE_CHESTEXT = re.compile(
+    r"^f(?P<frame>\d{4})_s(?P<slot>\d{2})_chestext_idx(?P<idx>\d{6})_sym(?P<sym>\d{2})_rnti(?P<rnti>[0-9a-fA-F]{4}|\d{5})_harq(?P<harq>\d{2})\.bin$"
 )
 
 RE_GNB_TXBITS = re.compile(
@@ -224,6 +285,9 @@ def scan_raw():
 
     ue_pdsch_cfg_map: Dict[Tuple[int, int, int, int, int], Path] = {}
     ue_rm_exact_map: Dict[Tuple[int, int, int, int, int], Dict[int, Path]] = {}
+
+    ue_eqsymb_map: Dict[UEKeyR, Dict[int, Path]] = {}
+    ue_chestext_map: Dict[UEKeyR, Dict[int, Path]] = {}
 
     gnb_groups: Dict[Tuple[int, int, int, int, int], List[GNBPack]] = {}
     gnb_ldpc_map: Dict[Tuple[int, int, int, int, int, int, str], Path] = {}
@@ -329,6 +393,32 @@ def scan_raw():
             ue_rm_exact_map.setdefault(key, {})[seg] = p
             continue
 
+        m = RE_UE_EQSYMB.match(name)
+        if m:
+            k = UEKeyR(
+                int(m.group("frame")),
+                int(m.group("slot")),
+                int(m.group("idx")),
+                parse_rnti(m.group("rnti")),
+                int(m.group("harq")),
+            )
+            sym = int(m.group("sym"))
+            ue_eqsymb_map.setdefault(k, {})[sym] = p
+            continue
+
+        m = RE_UE_CHESTEXT.match(name)
+        if m:
+            k = UEKeyR(
+                int(m.group("frame")),
+                int(m.group("slot")),
+                int(m.group("idx")),
+                parse_rnti(m.group("rnti")),
+                int(m.group("harq")),
+            )
+            sym = int(m.group("sym"))
+            ue_chestext_map.setdefault(k, {})[sym] = p
+            continue
+
         m = RE_GNB_TXBITS.match(name)
         if m:
             gk = GNBKey(
@@ -380,6 +470,8 @@ def scan_raw():
         ue_c_map,
         ue_pdsch_cfg_map,
         ue_rm_exact_map,
+        ue_eqsymb_map,
+        ue_chestext_map,
         gnb_groups,
     )
 
@@ -397,6 +489,8 @@ def build_bundles():
         ue_c_map,
         ue_pdsch_cfg_map,
         ue_rm_exact_map,
+        ue_eqsymb_map,
+        ue_chestext_map,
         gnb_groups,
     ) = scan_raw()
 
@@ -408,6 +502,13 @@ def build_bundles():
     skipped_missing_rm_exact = 0
     skipped_missing_gnb_pair = 0
     skipped_bad_ue_ldpc_json = 0
+
+    bundles_with_eqsymb = 0
+    bundles_with_chestext = 0
+    bundles_missing_eqsymb = 0
+    bundles_missing_chestext = 0
+    bundles_incomplete_eqsymb = 0
+    bundles_incomplete_chestext = 0
 
     items = sorted(
         ue_r_parts.items(),
@@ -548,6 +649,46 @@ def build_bundles():
         if ue_pdsch_cfg is not None:
             pdsch_cfg_kv = load_kv_txt(ue_pdsch_cfg)
 
+        expected_symbols = expected_symbol_list_from_pdsch_cfg(pdsch_cfg_kv)
+
+        # -------------------------------------------------
+        # Optional supervision side-files: eqsymb / chestext
+        # -------------------------------------------------
+        eqsymb_src_map = ue_eqsymb_map.get(uekr, {})
+        chestext_src_map = ue_chestext_map.get(uekr, {})
+
+        eqsymb_list: List[str] = []
+        chestext_list: List[str] = []
+
+        eqsymb_complete = False
+        chestext_complete = False
+        eqsymb_present_symbols: List[int] = []
+        chestext_present_symbols: List[int] = []
+
+        if eqsymb_src_map:
+            eqsymb_list = copy_symbol_file_list(eqsymb_src_map, out_dir, "eqsymb")
+            bundles_with_eqsymb += 1
+            eqsymb_complete, _, eqsymb_present_symbols = check_symbol_completeness(
+                eqsymb_src_map,
+                expected_symbols,
+            )
+            if not eqsymb_complete:
+                bundles_incomplete_eqsymb += 1
+        else:
+            bundles_missing_eqsymb += 1
+
+        if chestext_src_map:
+            chestext_list = copy_symbol_file_list(chestext_src_map, out_dir, "chestext")
+            bundles_with_chestext += 1
+            chestext_complete, _, chestext_present_symbols = check_symbol_completeness(
+                chestext_src_map,
+                expected_symbols,
+            )
+            if not chestext_complete:
+                bundles_incomplete_chestext += 1
+        else:
+            bundles_missing_chestext += 1
+
         meta = {
             "frame": uekr.frame,
             "slot": uekr.slot,
@@ -565,6 +706,8 @@ def build_bundles():
                 "ue_c_list": ue_c_list,
                 "pdsch_cfg": ("pdsch_cfg.txt" if ue_pdsch_cfg is not None else None),
                 "rm_exact_i8_list": rm_exact_list,
+                "eqsymb_list": eqsymb_list,
+                "chestext_list": chestext_list,
             },
             "gnb": {
                 "rnti_hex": f"{best.key.rnti:04x}",
@@ -580,6 +723,13 @@ def build_bundles():
                 "llrLen": safe_int(ue_j, "llrLen", -1),
                 "E_list": ue_j.get("E_list", None),
                 "R_list": ue_j.get("R_list", None),
+            },
+            "supervision": {
+                "expected_symbol_list": expected_symbols,
+                "eqsymb_present_symbols": eqsymb_present_symbols,
+                "chestext_present_symbols": chestext_present_symbols,
+                "eqsymb_complete": eqsymb_complete,
+                "chestext_complete": chestext_complete,
             },
         }
 
@@ -597,6 +747,12 @@ def build_bundles():
         "skipped_missing_rm_exact": skipped_missing_rm_exact,
         "skipped_missing_gnb_pair": skipped_missing_gnb_pair,
         "skipped_bad_ue_ldpc_json": skipped_bad_ue_ldpc_json,
+        "bundles_with_eqsymb": bundles_with_eqsymb,
+        "bundles_with_chestext": bundles_with_chestext,
+        "bundles_missing_eqsymb": bundles_missing_eqsymb,
+        "bundles_missing_chestext": bundles_missing_chestext,
+        "bundles_incomplete_eqsymb": bundles_incomplete_eqsymb,
+        "bundles_incomplete_chestext": bundles_incomplete_chestext,
     }
     (BUNDLE_DIR / "batch_gate_summary.json").write_text(json.dumps(summary, indent=2))
     return summary
@@ -614,6 +770,12 @@ def main():
     print("[BUNDLE] skipped_missing_rm_exact =", s["skipped_missing_rm_exact"])
     print("[BUNDLE] skipped_missing_gnb_pair =", s["skipped_missing_gnb_pair"])
     print("[BUNDLE] skipped_bad_ue_ldpc_json =", s["skipped_bad_ue_ldpc_json"])
+    print("[BUNDLE] bundles_with_eqsymb =", s["bundles_with_eqsymb"])
+    print("[BUNDLE] bundles_with_chestext =", s["bundles_with_chestext"])
+    print("[BUNDLE] bundles_missing_eqsymb =", s["bundles_missing_eqsymb"])
+    print("[BUNDLE] bundles_missing_chestext =", s["bundles_missing_chestext"])
+    print("[BUNDLE] bundles_incomplete_eqsymb =", s["bundles_incomplete_eqsymb"])
+    print("[BUNDLE] bundles_incomplete_chestext =", s["bundles_incomplete_chestext"])
     print("[BUNDLE] wrote:", str(BUNDLE_DIR / "batch_gate_summary.json"))
 
 
