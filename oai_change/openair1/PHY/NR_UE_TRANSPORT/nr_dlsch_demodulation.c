@@ -679,6 +679,60 @@ int nr_rx_pdsch(PHY_VARS_NR_UE *ue,
                                   *log2_maxh,
                                   measurements); // log2_maxh+I0_shift
     stop_meas_nr_ue_phy(ue, DLSCH_CHANNEL_COMPENSATION_STATS);
+
+    // === SPX EQ / CH DUMP (OUTSIDE DEBUG) ===
+    if (nb_re_pdsch > 0) {
+      const char *root = "/home/richard93513/SpikingRx-on-OAI/spx_records/raw";
+      char fname_eq[512], fname_ch[512];
+      uint32_t idx = spx_curr_idx;
+
+      snprintf(fname_eq, sizeof(fname_eq),
+        "%s/f%04d_s%02d_eqsymb_idx%06u_sym%02d_rnti%04x_harq%02d.bin",
+        root, frame, nr_slot_rx, idx, symbol, (unsigned)(dlsch[0].rnti & 0xffff), harq_pid);
+
+      FILE *feq = fopen(fname_eq, "wb");
+      if (feq) {
+        fwrite(&rxdataF_comp[0][0][symbol * rx_size_symbol], sizeof(c16_t), nb_re_pdsch, feq);
+        fclose(feq);
+      }
+
+      snprintf(fname_ch, sizeof(fname_ch),
+        "%s/f%04d_s%02d_chestext_idx%06u_sym%02d_rnti%04x_harq%02d.bin",
+        root, frame, nr_slot_rx, idx, symbol, (unsigned)(dlsch[0].rnti & 0xffff), harq_pid);
+
+      FILE *fch = fopen(fname_ch, "wb");
+      if (fch) {
+        fwrite(&dl_ch_estimates_ext[0][0], sizeof(c16_t), nb_re_pdsch, fch);
+        fclose(fch);
+      }
+    }
+
+    // === SPX EQ / CH DUMP (OUTSIDE DEBUG) ===
+    if (nb_re_pdsch > 0) {
+      const char *root = "/home/richard93513/SpikingRx-on-OAI/spx_records/raw";
+      char fname_eq[512], fname_ch[512];
+      uint32_t idx = spx_curr_idx;
+
+      snprintf(fname_eq, sizeof(fname_eq),
+        "%s/f%04d_s%02d_eqsymb_idx%06u_sym%02d_rnti%04x_harq%02d.bin",
+        root, frame, nr_slot_rx, idx, symbol, (unsigned)(dlsch[0].rnti & 0xffff), harq_pid);
+
+      FILE *feq = fopen(fname_eq, "wb");
+      if (feq) {
+        fwrite(&rxdataF_comp[0][0][symbol * rx_size_symbol], sizeof(c16_t), nb_re_pdsch, feq);
+        fclose(feq);
+      }
+
+      snprintf(fname_ch, sizeof(fname_ch),
+        "%s/f%04d_s%02d_chestext_idx%06u_sym%02d_rnti%04x_harq%02d.bin",
+        root, frame, nr_slot_rx, idx, symbol, (unsigned)(dlsch[0].rnti & 0xffff), harq_pid);
+
+      FILE *fch = fopen(fname_ch, "wb");
+      if (fch) {
+        fwrite(&dl_ch_estimates_ext[0][0], sizeof(c16_t), nb_re_pdsch, fch);
+        fclose(fch);
+      }
+    }
     if (meas_enabled) {
       LOG_D(PHY,
             "[AbsSFN %u.%d] Slot%d Symbol %d log2_maxh %d Channel Comp  %5.2f \n",
@@ -707,6 +761,32 @@ int nr_rx_pdsch(PHY_VARS_NR_UE *ue,
 
     snprintf(filename, 50, "rxdataF_comp00_symb_%d_nr_slot_rx_%d.m", symbol, nr_slot_rx);
     write_output(filename, "rxdataF_comp00", &rxdataF_comp[0][0][symbol * rx_size_symbol], rx_size_symbol, 1, 1);
+    // === SPX EQ / CH DUMP ===
+    if (nb_re_pdsch > 0) {
+      const char *root = "/home/richard93513/SpikingRx-on-OAI/spx_records/raw";
+      char fname_eq[512], fname_ch[512];
+      uint32_t idx = spx_curr_idx;
+
+      snprintf(fname_eq, sizeof(fname_eq),
+        "%s/f%04d_s%02d_eqsymb_idx%06u_sym%02d_rnti%04x_harq%02d.bin",
+        root, frame, nr_slot_rx, idx, symbol, (unsigned)(dlsch[0].rnti & 0xffff), harq_pid);
+
+      FILE *feq = fopen(fname_eq, "wb");
+      if (feq) {
+        fwrite(&rxdataF_comp[0][0][symbol * rx_size_symbol], sizeof(c16_t), nb_re_pdsch, feq);
+        fclose(feq);
+      }
+
+      snprintf(fname_ch, sizeof(fname_ch),
+        "%s/f%04d_s%02d_chestext_idx%06u_sym%02d_rnti%04x_harq%02d.bin",
+        root, frame, nr_slot_rx, idx, symbol, (unsigned)(dlsch[0].rnti & 0xffff), harq_pid);
+
+      FILE *fch = fopen(fname_ch, "wb");
+      if (fch) {
+        fwrite(&dl_ch_estimates_ext[0][0], sizeof(c16_t), nb_re_pdsch, fch);
+        fclose(fch);
+      }
+    }
 #endif
   }
 

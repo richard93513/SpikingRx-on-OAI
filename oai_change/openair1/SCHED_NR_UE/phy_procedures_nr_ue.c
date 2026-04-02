@@ -103,7 +103,8 @@ static void spx_dump_pdsch_cfg(const char *path,
                                uint16_t start_rb,
                                uint16_t number_rbs,
                                uint16_t start_symbol,
-                               uint16_t number_symbols)
+                               uint16_t number_symbols,
+                               uint32_t nvar)
 {
   FILE *fp = fopen(path, "w");
   if (!fp) return;
@@ -124,6 +125,7 @@ static void spx_dump_pdsch_cfg(const char *path,
   fprintf(fp, "number_rbs %u\n", number_rbs);
   fprintf(fp, "start_symbol %u\n", start_symbol);
   fprintf(fp, "number_symbols %u\n", number_symbols);
+  fprintf(fp, "nvar %u\n", nvar);
 
   fclose(fp);
 }
@@ -627,8 +629,9 @@ static int nr_ue_pdsch_procedures(PHY_VARS_NR_UE *ue,
                                   NR_UE_DLSCH_t dlsch[2],
                                   int16_t *llr[2],
                                   c16_t rxdataF[][ue->frame_parms.samples_per_slot_wCP],
-                                  int G)
+                                  int G, uint32_t *nvar_out)
 {
+  uint32_t nvar = 0;
   int frame_rx = proc->frame_rx;
   int nr_slot_rx = proc->nr_slot_rx;
 
@@ -683,7 +686,6 @@ static int nr_ue_pdsch_procedures(PHY_VARS_NR_UE *ue,
                 rx_size_symbol * NR_SYMBOLS_PER_SLOT,
                 false);
 
-    uint32_t nvar = 0;
 
     start_meas_nr_ue_phy(ue, DLSCH_CHANNEL_ESTIMATION_STATS);
     for (int m = dlschCfg->start_symbol; m < (dlschCfg->start_symbol + dlschCfg->number_symbols); m++) {
@@ -718,6 +720,21 @@ static int nr_ue_pdsch_procedures(PHY_VARS_NR_UE *ue,
     }
     stop_meas_nr_ue_phy(ue, DLSCH_CHANNEL_ESTIMATION_STATS);
     nvar /= (dlschCfg->number_symbols * dlsch0->Nl * ue->frame_parms.nb_antennas_rx);
+    {
+      char cfg_path[512];
+      const char *home = getenv("HOME");
+      if (!home) home = ".";
+      snprintf(cfg_path, sizeof(cfg_path),
+               "%s/SpikingRx-on-OAI/spx_records/raw/"
+               "f%04d_s%02d_pdsch_cfg_rnti%05u_harq%02d_cw%01d.txt",
+               home, frame_rx, nr_slot_rx, dlsch[0].rnti, harq_pid, 0);
+      FILE *fp_nvar = fopen(cfg_path, "a");
+      if (fp_nvar) {
+        fprintf(fp_nvar, "nvar %u\n", nvar);
+        fclose(fp_nvar);
+      }
+    }
+    printf("[SPX_NVAR] frame=%d slot=%d harq=%d nvar=%u\n", frame_rx, nr_slot_rx, harq_pid, nvar);
     nr_ue_measurement_procedures(2, ue, proc, freq_alloc.num_rbs, pdsch_est_size, pdsch_dl_ch_estimates);
 
     if (ue->chest_time == 1) { // averaging time domain channel estimates
@@ -824,6 +841,7 @@ static int nr_ue_pdsch_procedures(PHY_VARS_NR_UE *ue,
     free(toFree);
     free(toFree2);
   }
+  *nvar_out = nvar;
   return 0;
 }
 
@@ -880,7 +898,7 @@ static uint32_t compute_csi_rm_unav_res(fapi_nr_dl_config_dlsch_pdu_rel15_t *dls
 static void nr_ue_dlsch_procedures(PHY_VARS_NR_UE *ue,
                                    const UE_nr_rxtx_proc_t *proc,
                                    NR_UE_DLSCH_t dlsch[2],
-                                   int16_t *llr[2]) {
+                                   int16_t *llr[2], uint32_t nvar) {
   if (dlsch[0].active == false) {
     LOG_E(PHY, "DLSCH should be active when calling this function\n");
     return;
@@ -974,7 +992,8 @@ static void nr_ue_dlsch_procedures(PHY_VARS_NR_UE *ue,
                        dlsch[DLSCH_id].dlsch_config.start_rb,
                        dlsch[DLSCH_id].dlsch_config.number_rbs,
                        dlsch[DLSCH_id].dlsch_config.start_symbol,
-                       dlsch[DLSCH_id].dlsch_config.number_symbols);
+                       dlsch[DLSCH_id].dlsch_config.number_symbols,
+                       nvar);
 
     start_meas_nr_ue_phy(ue, DLSCH_UNSCRAMBLING_STATS);
     nr_dlsch_unscrambling(llr[DLSCH_id], G[DLSCH_id], 0, dlsch[DLSCH_id].dlsch_config.dlDataScramblingId, dlsch[DLSCH_id].rnti);
@@ -1269,6 +1288,7 @@ int pbch_processing(PHY_VARS_NR_UE *ue, const UE_nr_rxtx_proc_t *proc, nr_phy_da
 
 void pdsch_processing(PHY_VARS_NR_UE *ue, const UE_nr_rxtx_proc_t *proc, nr_phy_data_t *phy_data)
 {
+  uint32_t nvar = 0;
   int frame_rx = proc->frame_rx;
   int nr_slot_rx = proc->nr_slot_rx;
   int gNB_id = proc->gNB_id;
@@ -1351,7 +1371,8 @@ void pdsch_processing(PHY_VARS_NR_UE *ue, const UE_nr_rxtx_proc_t *proc, nr_phy_
 
     VCD_SIGNAL_DUMPER_DUMP_FUNCTION_BY_NAME(VCD_SIGNAL_DUMPER_FUNCTIONS_PDSCH_PROC_C, VCD_FUNCTION_IN);
     // it returns -1 in case of internal failure, or 0 in case of normal result
-    int ret_pdsch = nr_ue_pdsch_procedures(ue, proc, dlsch, llr, rxdataF, G);
+    uint32_t nvar;
+    int ret_pdsch = nr_ue_pdsch_procedures(ue, proc, dlsch, llr, rxdataF, G, &nvar);
     TracyCPlot("pdsch mcs", dlsch->dlsch_config.mcs);
 
     VCD_SIGNAL_DUMPER_DUMP_FUNCTION_BY_NAME(VCD_SIGNAL_DUMPER_FUNCTIONS_PDSCH_PROC_C, VCD_FUNCTION_OUT);
@@ -1364,7 +1385,7 @@ void pdsch_processing(PHY_VARS_NR_UE *ue, const UE_nr_rxtx_proc_t *proc, nr_phy_
     start_meas_nr_ue_phy(ue, DLSCH_PROCEDURES_STATS);
 
     if (ret_pdsch >= 0) {
-      nr_ue_dlsch_procedures(ue, proc, dlsch, llr);
+      nr_ue_dlsch_procedures(ue, proc, dlsch, llr, nvar);
     }
     else {
       LOG_E(NR_PHY, "Demodulation impossible, internal error\n");

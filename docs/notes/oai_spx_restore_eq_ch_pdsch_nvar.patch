@@ -1,0 +1,266 @@
+From 7fd8479ef7217f81ae87cbe684aaa73cf8322cf0 Mon Sep 17 00:00:00 2001
+From: richard93513 <richard93513@gmail.com>
+Date: Fri, 3 Apr 2026 00:04:28 +0800
+Subject: [PATCH] Restore eq/ch dumps, extend pdsch_cfg, and export scaled nvar
+
+---
+ .../nr_dl_channel_estimation.c                |  2 +-
+ .../NR_UE_TRANSPORT/nr_dlsch_demodulation.c   | 80 +++++++++++++++++++
+ openair1/SCHED_NR_UE/phy_procedures_nr_ue.c   | 59 ++++++++++++--
+ 3 files changed, 133 insertions(+), 8 deletions(-)
+
+diff --git a/openair1/PHY/NR_UE_ESTIMATION/nr_dl_channel_estimation.c b/openair1/PHY/NR_UE_ESTIMATION/nr_dl_channel_estimation.c
+index 46e2918749..6023fb419a 100644
+--- a/openair1/PHY/NR_UE_ESTIMATION/nr_dl_channel_estimation.c
++++ b/openair1/PHY/NR_UE_ESTIMATION/nr_dl_channel_estimation.c
+@@ -995,7 +995,7 @@ void NFAPI_NR_DMRS_TYPE1_linear_interp(NR_DL_FRAME_PARMS *frame_parms,
+   }
+ 
+   if (nvar && nest_count > 0) {
+-    *nvar = (uint32_t)(noise_amp2 / (nest_count * frame_parms->nb_antennas_rx));
++    *nvar = (uint32_t)((1024.0 * noise_amp2) / (nest_count * frame_parms->nb_antennas_rx));
+   }
+ }
+ 
+diff --git a/openair1/PHY/NR_UE_TRANSPORT/nr_dlsch_demodulation.c b/openair1/PHY/NR_UE_TRANSPORT/nr_dlsch_demodulation.c
+index c2c7b03df4..c59d66d92a 100644
+--- a/openair1/PHY/NR_UE_TRANSPORT/nr_dlsch_demodulation.c
++++ b/openair1/PHY/NR_UE_TRANSPORT/nr_dlsch_demodulation.c
+@@ -679,6 +679,60 @@ int nr_rx_pdsch(PHY_VARS_NR_UE *ue,
+                                   *log2_maxh,
+                                   measurements); // log2_maxh+I0_shift
+     stop_meas_nr_ue_phy(ue, DLSCH_CHANNEL_COMPENSATION_STATS);
++
++    // === SPX EQ / CH DUMP (OUTSIDE DEBUG) ===
++    if (nb_re_pdsch > 0) {
++      const char *root = "/home/richard93513/SpikingRx-on-OAI/spx_records/raw";
++      char fname_eq[512], fname_ch[512];
++      uint32_t idx = spx_curr_idx;
++
++      snprintf(fname_eq, sizeof(fname_eq),
++        "%s/f%04d_s%02d_eqsymb_idx%06u_sym%02d_rnti%04x_harq%02d.bin",
++        root, frame, nr_slot_rx, idx, symbol, (unsigned)(dlsch[0].rnti & 0xffff), harq_pid);
++
++      FILE *feq = fopen(fname_eq, "wb");
++      if (feq) {
++        fwrite(&rxdataF_comp[0][0][symbol * rx_size_symbol], sizeof(c16_t), nb_re_pdsch, feq);
++        fclose(feq);
++      }
++
++      snprintf(fname_ch, sizeof(fname_ch),
++        "%s/f%04d_s%02d_chestext_idx%06u_sym%02d_rnti%04x_harq%02d.bin",
++        root, frame, nr_slot_rx, idx, symbol, (unsigned)(dlsch[0].rnti & 0xffff), harq_pid);
++
++      FILE *fch = fopen(fname_ch, "wb");
++      if (fch) {
++        fwrite(&dl_ch_estimates_ext[0][0], sizeof(c16_t), nb_re_pdsch, fch);
++        fclose(fch);
++      }
++    }
++
++    // === SPX EQ / CH DUMP (OUTSIDE DEBUG) ===
++    if (nb_re_pdsch > 0) {
++      const char *root = "/home/richard93513/SpikingRx-on-OAI/spx_records/raw";
++      char fname_eq[512], fname_ch[512];
++      uint32_t idx = spx_curr_idx;
++
++      snprintf(fname_eq, sizeof(fname_eq),
++        "%s/f%04d_s%02d_eqsymb_idx%06u_sym%02d_rnti%04x_harq%02d.bin",
++        root, frame, nr_slot_rx, idx, symbol, (unsigned)(dlsch[0].rnti & 0xffff), harq_pid);
++
++      FILE *feq = fopen(fname_eq, "wb");
++      if (feq) {
++        fwrite(&rxdataF_comp[0][0][symbol * rx_size_symbol], sizeof(c16_t), nb_re_pdsch, feq);
++        fclose(feq);
++      }
++
++      snprintf(fname_ch, sizeof(fname_ch),
++        "%s/f%04d_s%02d_chestext_idx%06u_sym%02d_rnti%04x_harq%02d.bin",
++        root, frame, nr_slot_rx, idx, symbol, (unsigned)(dlsch[0].rnti & 0xffff), harq_pid);
++
++      FILE *fch = fopen(fname_ch, "wb");
++      if (fch) {
++        fwrite(&dl_ch_estimates_ext[0][0], sizeof(c16_t), nb_re_pdsch, fch);
++        fclose(fch);
++      }
++    }
+     if (meas_enabled) {
+       LOG_D(PHY,
+             "[AbsSFN %u.%d] Slot%d Symbol %d log2_maxh %d Channel Comp  %5.2f \n",
+@@ -707,6 +761,32 @@ int nr_rx_pdsch(PHY_VARS_NR_UE *ue,
+ 
+     snprintf(filename, 50, "rxdataF_comp00_symb_%d_nr_slot_rx_%d.m", symbol, nr_slot_rx);
+     write_output(filename, "rxdataF_comp00", &rxdataF_comp[0][0][symbol * rx_size_symbol], rx_size_symbol, 1, 1);
++    // === SPX EQ / CH DUMP ===
++    if (nb_re_pdsch > 0) {
++      const char *root = "/home/richard93513/SpikingRx-on-OAI/spx_records/raw";
++      char fname_eq[512], fname_ch[512];
++      uint32_t idx = spx_curr_idx;
++
++      snprintf(fname_eq, sizeof(fname_eq),
++        "%s/f%04d_s%02d_eqsymb_idx%06u_sym%02d_rnti%04x_harq%02d.bin",
++        root, frame, nr_slot_rx, idx, symbol, (unsigned)(dlsch[0].rnti & 0xffff), harq_pid);
++
++      FILE *feq = fopen(fname_eq, "wb");
++      if (feq) {
++        fwrite(&rxdataF_comp[0][0][symbol * rx_size_symbol], sizeof(c16_t), nb_re_pdsch, feq);
++        fclose(feq);
++      }
++
++      snprintf(fname_ch, sizeof(fname_ch),
++        "%s/f%04d_s%02d_chestext_idx%06u_sym%02d_rnti%04x_harq%02d.bin",
++        root, frame, nr_slot_rx, idx, symbol, (unsigned)(dlsch[0].rnti & 0xffff), harq_pid);
++
++      FILE *fch = fopen(fname_ch, "wb");
++      if (fch) {
++        fwrite(&dl_ch_estimates_ext[0][0], sizeof(c16_t), nb_re_pdsch, fch);
++        fclose(fch);
++      }
++    }
+ #endif
+   }
+ 
+diff --git a/openair1/SCHED_NR_UE/phy_procedures_nr_ue.c b/openair1/SCHED_NR_UE/phy_procedures_nr_ue.c
+index b7ef0aaeff..30f5aa02e3 100644
+--- a/openair1/SCHED_NR_UE/phy_procedures_nr_ue.c
++++ b/openair1/SCHED_NR_UE/phy_procedures_nr_ue.c
+@@ -95,7 +95,16 @@ static void spx_dump_pdsch_cfg(const char *path,
+                                uint16_t rnti,
+                                int G,
+                                uint32_t dlDataScramblingId,
+-                               uint32_t physCellId)
++                               uint32_t physCellId,
++                               uint16_t dlDmrsSymbPos,
++                               uint8_t dmrsConfigType,
++                               uint8_t n_dmrs_cdm_groups,
++                               uint16_t BWPStart,
++                               uint16_t start_rb,
++                               uint16_t number_rbs,
++                               uint16_t start_symbol,
++                               uint16_t number_symbols,
++                               uint32_t nvar)
+ {
+   FILE *fp = fopen(path, "w");
+   if (!fp) return;
+@@ -108,6 +117,15 @@ static void spx_dump_pdsch_cfg(const char *path,
+   fprintf(fp, "G %d\n", G);
+   fprintf(fp, "dlDataScramblingId %u\n", dlDataScramblingId);
+   fprintf(fp, "physCellId %u\n", physCellId);
++  fprintf(fp, "dlDmrsSymbPos %u\n", dlDmrsSymbPos);
++  fprintf(fp, "dmrsConfigType %u\n", dmrsConfigType);
++  fprintf(fp, "n_dmrs_cdm_groups %u\n", n_dmrs_cdm_groups);
++  fprintf(fp, "BWPStart %u\n", BWPStart);
++  fprintf(fp, "start_rb %u\n", start_rb);
++  fprintf(fp, "number_rbs %u\n", number_rbs);
++  fprintf(fp, "start_symbol %u\n", start_symbol);
++  fprintf(fp, "number_symbols %u\n", number_symbols);
++  fprintf(fp, "nvar %u\n", nvar);
+ 
+   fclose(fp);
+ }
+@@ -611,8 +629,9 @@ static int nr_ue_pdsch_procedures(PHY_VARS_NR_UE *ue,
+                                   NR_UE_DLSCH_t dlsch[2],
+                                   int16_t *llr[2],
+                                   c16_t rxdataF[][ue->frame_parms.samples_per_slot_wCP],
+-                                  int G)
++                                  int G, uint32_t *nvar_out)
+ {
++  uint32_t nvar = 0;
+   int frame_rx = proc->frame_rx;
+   int nr_slot_rx = proc->nr_slot_rx;
+ 
+@@ -667,7 +686,6 @@ static int nr_ue_pdsch_procedures(PHY_VARS_NR_UE *ue,
+                 rx_size_symbol * NR_SYMBOLS_PER_SLOT,
+                 false);
+ 
+-    uint32_t nvar = 0;
+ 
+     start_meas_nr_ue_phy(ue, DLSCH_CHANNEL_ESTIMATION_STATS);
+     for (int m = dlschCfg->start_symbol; m < (dlschCfg->start_symbol + dlschCfg->number_symbols); m++) {
+@@ -702,6 +720,21 @@ static int nr_ue_pdsch_procedures(PHY_VARS_NR_UE *ue,
+     }
+     stop_meas_nr_ue_phy(ue, DLSCH_CHANNEL_ESTIMATION_STATS);
+     nvar /= (dlschCfg->number_symbols * dlsch0->Nl * ue->frame_parms.nb_antennas_rx);
++    {
++      char cfg_path[512];
++      const char *home = getenv("HOME");
++      if (!home) home = ".";
++      snprintf(cfg_path, sizeof(cfg_path),
++               "%s/SpikingRx-on-OAI/spx_records/raw/"
++               "f%04d_s%02d_pdsch_cfg_rnti%05u_harq%02d_cw%01d.txt",
++               home, frame_rx, nr_slot_rx, dlsch[0].rnti, harq_pid, 0);
++      FILE *fp_nvar = fopen(cfg_path, "a");
++      if (fp_nvar) {
++        fprintf(fp_nvar, "nvar %u\n", nvar);
++        fclose(fp_nvar);
++      }
++    }
++    printf("[SPX_NVAR] frame=%d slot=%d harq=%d nvar=%u\n", frame_rx, nr_slot_rx, harq_pid, nvar);
+     nr_ue_measurement_procedures(2, ue, proc, freq_alloc.num_rbs, pdsch_est_size, pdsch_dl_ch_estimates);
+ 
+     if (ue->chest_time == 1) { // averaging time domain channel estimates
+@@ -808,6 +841,7 @@ static int nr_ue_pdsch_procedures(PHY_VARS_NR_UE *ue,
+     free(toFree);
+     free(toFree2);
+   }
++  *nvar_out = nvar;
+   return 0;
+ }
+ 
+@@ -864,7 +898,7 @@ static uint32_t compute_csi_rm_unav_res(fapi_nr_dl_config_dlsch_pdu_rel15_t *dls
+ static void nr_ue_dlsch_procedures(PHY_VARS_NR_UE *ue,
+                                    const UE_nr_rxtx_proc_t *proc,
+                                    NR_UE_DLSCH_t dlsch[2],
+-                                   int16_t *llr[2]) {
++                                   int16_t *llr[2], uint32_t nvar) {
+   if (dlsch[0].active == false) {
+     LOG_E(PHY, "DLSCH should be active when calling this function\n");
+     return;
+@@ -950,7 +984,16 @@ static void nr_ue_dlsch_procedures(PHY_VARS_NR_UE *ue,
+                        dlsch[DLSCH_id].rnti,
+                        G[DLSCH_id],
+                        dlsch[DLSCH_id].dlsch_config.dlDataScramblingId,
+-                       ue->frame_parms.Nid_cell);
++                       ue->frame_parms.Nid_cell,
++                       dlsch[DLSCH_id].dlsch_config.dlDmrsSymbPos,
++                       dlsch[DLSCH_id].dlsch_config.dmrsConfigType,
++                       dlsch[DLSCH_id].dlsch_config.n_dmrs_cdm_groups,
++                       dlsch[DLSCH_id].dlsch_config.BWPStart,
++                       dlsch[DLSCH_id].dlsch_config.start_rb,
++                       dlsch[DLSCH_id].dlsch_config.number_rbs,
++                       dlsch[DLSCH_id].dlsch_config.start_symbol,
++                       dlsch[DLSCH_id].dlsch_config.number_symbols,
++                       nvar);
+ 
+     start_meas_nr_ue_phy(ue, DLSCH_UNSCRAMBLING_STATS);
+     nr_dlsch_unscrambling(llr[DLSCH_id], G[DLSCH_id], 0, dlsch[DLSCH_id].dlsch_config.dlDataScramblingId, dlsch[DLSCH_id].rnti);
+@@ -1245,6 +1288,7 @@ int pbch_processing(PHY_VARS_NR_UE *ue, const UE_nr_rxtx_proc_t *proc, nr_phy_da
+ 
+ void pdsch_processing(PHY_VARS_NR_UE *ue, const UE_nr_rxtx_proc_t *proc, nr_phy_data_t *phy_data)
+ {
++  uint32_t nvar = 0;
+   int frame_rx = proc->frame_rx;
+   int nr_slot_rx = proc->nr_slot_rx;
+   int gNB_id = proc->gNB_id;
+@@ -1327,7 +1371,8 @@ void pdsch_processing(PHY_VARS_NR_UE *ue, const UE_nr_rxtx_proc_t *proc, nr_phy_
+ 
+     VCD_SIGNAL_DUMPER_DUMP_FUNCTION_BY_NAME(VCD_SIGNAL_DUMPER_FUNCTIONS_PDSCH_PROC_C, VCD_FUNCTION_IN);
+     // it returns -1 in case of internal failure, or 0 in case of normal result
+-    int ret_pdsch = nr_ue_pdsch_procedures(ue, proc, dlsch, llr, rxdataF, G);
++    uint32_t nvar;
++    int ret_pdsch = nr_ue_pdsch_procedures(ue, proc, dlsch, llr, rxdataF, G, &nvar);
+     TracyCPlot("pdsch mcs", dlsch->dlsch_config.mcs);
+ 
+     VCD_SIGNAL_DUMPER_DUMP_FUNCTION_BY_NAME(VCD_SIGNAL_DUMPER_FUNCTIONS_PDSCH_PROC_C, VCD_FUNCTION_OUT);
+@@ -1340,7 +1385,7 @@ void pdsch_processing(PHY_VARS_NR_UE *ue, const UE_nr_rxtx_proc_t *proc, nr_phy_
+     start_meas_nr_ue_phy(ue, DLSCH_PROCEDURES_STATS);
+ 
+     if (ret_pdsch >= 0) {
+-      nr_ue_dlsch_procedures(ue, proc, dlsch, llr);
++      nr_ue_dlsch_procedures(ue, proc, dlsch, llr, nvar);
+     }
+     else {
+       LOG_E(NR_PHY, "Demodulation impossible, internal error\n");
+-- 
+2.34.1
+
