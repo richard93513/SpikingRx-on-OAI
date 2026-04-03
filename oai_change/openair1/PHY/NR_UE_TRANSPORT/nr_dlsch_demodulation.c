@@ -680,6 +680,23 @@ int nr_rx_pdsch(PHY_VARS_NR_UE *ue,
                                   measurements); // log2_maxh+I0_shift
     stop_meas_nr_ue_phy(ue, DLSCH_CHANNEL_COMPENSATION_STATS);
 
+    // === SPX RAW RX DUMP (BEFORE EQ DOMAIN OUTPUT USE) ===
+    if (nb_re_pdsch > 0) {
+      const char *root = "/home/richard93513/SpikingRx-on-OAI/spx_records/raw";
+      char fname_rx[512];
+      uint32_t idx = spx_curr_idx;
+
+      snprintf(fname_rx, sizeof(fname_rx),
+        "%s/f%04d_s%02d_rxdataFext_idx%06u_sym%02d_rnti%04x_harq%02d.bin",
+        root, frame, nr_slot_rx, idx, symbol, (unsigned)(dlsch[0].rnti & 0xffff), harq_pid);
+
+      FILE *frx = fopen(fname_rx, "wb");
+      if (frx) {
+        fwrite(&rxdataF_ext[0][0], sizeof(c16_t), nb_re_pdsch, frx);
+        fclose(frx);
+      }
+    }
+
     // === SPX EQ / CH DUMP (OUTSIDE DEBUG) ===
     if (nb_re_pdsch > 0) {
       const char *root = "/home/richard93513/SpikingRx-on-OAI/spx_records/raw";

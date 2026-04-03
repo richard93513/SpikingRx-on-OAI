@@ -995,7 +995,7 @@ void NFAPI_NR_DMRS_TYPE1_linear_interp(NR_DL_FRAME_PARMS *frame_parms,
   }
 
   if (nvar && nest_count > 0) {
-    *nvar = (uint32_t)((1024.0 * noise_amp2) / (nest_count * frame_parms->nb_antennas_rx));
+    *nvar = (uint32_t)(noise_amp2 / (nest_count * frame_parms->nb_antennas_rx));
   }
 }
 

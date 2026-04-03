@@ -1,0 +1,117 @@
+===== nr_dl_channel_estimation.c =====
+diff --git a/openair1/PHY/NR_UE_ESTIMATION/nr_dl_channel_estimation.c b/openair1/PHY/NR_UE_ESTIMATION/nr_dl_channel_estimation.c
+index 6023fb419a..46e2918749 100644
+--- a/openair1/PHY/NR_UE_ESTIMATION/nr_dl_channel_estimation.c
++++ b/openair1/PHY/NR_UE_ESTIMATION/nr_dl_channel_estimation.c
+@@ -995,7 +995,7 @@ void NFAPI_NR_DMRS_TYPE1_linear_interp(NR_DL_FRAME_PARMS *frame_parms,
+   }
+ 
+   if (nvar && nest_count > 0) {
+-    *nvar = (uint32_t)((1024.0 * noise_amp2) / (nest_count * frame_parms->nb_antennas_rx));
++    *nvar = (uint32_t)(noise_amp2 / (nest_count * frame_parms->nb_antennas_rx));
+   }
+ }
+ 
+
+===== nr_dlsch_demodulation.c =====
+diff --git a/openair1/PHY/NR_UE_TRANSPORT/nr_dlsch_demodulation.c b/openair1/PHY/NR_UE_TRANSPORT/nr_dlsch_demodulation.c
+index c59d66d92a..38cfa2d331 100644
+--- a/openair1/PHY/NR_UE_TRANSPORT/nr_dlsch_demodulation.c
++++ b/openair1/PHY/NR_UE_TRANSPORT/nr_dlsch_demodulation.c
+@@ -680,6 +680,23 @@ int nr_rx_pdsch(PHY_VARS_NR_UE *ue,
+                                   measurements); // log2_maxh+I0_shift
+     stop_meas_nr_ue_phy(ue, DLSCH_CHANNEL_COMPENSATION_STATS);
+ 
++    // === SPX RAW RX DUMP (BEFORE EQ DOMAIN OUTPUT USE) ===
++    if (nb_re_pdsch > 0) {
++      const char *root = "/home/richard93513/SpikingRx-on-OAI/spx_records/raw";
++      char fname_rx[512];
++      uint32_t idx = spx_curr_idx;
++
++      snprintf(fname_rx, sizeof(fname_rx),
++        "%s/f%04d_s%02d_rxdataFext_idx%06u_sym%02d_rnti%04x_harq%02d.bin",
++        root, frame, nr_slot_rx, idx, symbol, (unsigned)(dlsch[0].rnti & 0xffff), harq_pid);
++
++      FILE *frx = fopen(fname_rx, "wb");
++      if (frx) {
++        fwrite(&rxdataF_ext[0][0], sizeof(c16_t), nb_re_pdsch, frx);
++        fclose(frx);
++      }
++    }
++
+     // === SPX EQ / CH DUMP (OUTSIDE DEBUG) ===
+     if (nb_re_pdsch > 0) {
+       const char *root = "/home/richard93513/SpikingRx-on-OAI/spx_records/raw";
+
+===== phy_procedures_nr_ue.c =====
+diff --git a/openair1/SCHED_NR_UE/phy_procedures_nr_ue.c b/openair1/SCHED_NR_UE/phy_procedures_nr_ue.c
+index 30f5aa02e3..b68ee38697 100644
+--- a/openair1/SCHED_NR_UE/phy_procedures_nr_ue.c
++++ b/openair1/SCHED_NR_UE/phy_procedures_nr_ue.c
+@@ -502,6 +502,15 @@ static void nr_ue_measurement_procedures(uint16_t l,
+         T_INT((int)ue->measurements.wideband_cqi_avg[0]),
+         T_INT((int)ue->common_vars.freq_offset));
+ #endif
++
++    LOG_I(PHY,
++          "[SPX_SNR] frame=%d slot=%d snr_db=%d rx_power_db=%d n0_db=%d wideband_cqi=%d\n",
++          proc->frame_rx,
++          nr_slot_rx,
++          ue->measurements.rx_power_avg_dB[0] - ue->measurements.n0_power_avg_dB,
++          ue->measurements.rx_power_avg_dB[0],
++          ue->measurements.n0_power_avg_dB,
++          ue->measurements.wideband_cqi_avg[0]);
+   }
+ 
+   // accumulate and filter timing offset estimation every subframe (instead of every frame)
+
+===== channelmod_rfsimu.conf =====
+diff --git a/targets/PROJECTS/GENERIC-NR-5GC/CONF/channelmod_rfsimu.conf b/targets/PROJECTS/GENERIC-NR-5GC/CONF/channelmod_rfsimu.conf
+index 420353d59c..29e1b025e2 100644
+--- a/targets/PROJECTS/GENERIC-NR-5GC/CONF/channelmod_rfsimu.conf
++++ b/targets/PROJECTS/GENERIC-NR-5GC/CONF/channelmod_rfsimu.conf
+@@ -9,7 +9,7 @@ channelmod = {
+         model_name                       = "rfsimu_channel_enB0"
+       	type                             = "AWGN";			  
+       	ploss_dB                         = 0;
+-        noise_power_dB = -10; 
++        noise_power_dB = -5;
+         forgetfact                       = 0;  
+         offset                           = 0;      
+         ds_tdl                           = 0;      
+@@ -18,7 +18,7 @@ channelmod = {
+         model_name                       = "rfsimu_channel_ue0"
+       	type                             = "AWGN";			  
+       	ploss_dB                         = 0;
+-        noise_power_dB = -10; 
++        noise_power_dB = -5;
+         forgetfact                       = 0;  
+         offset                           = 0;      
+         ds_tdl                           = 0;      
+@@ -29,7 +29,7 @@ channelmod = {
+         model_name                       = "rfsimu_channel_ue0"
+       	type                             = "AWGN";			  
+       	ploss_dB                         = 0;
+-        noise_power_dB = -10; 
++        noise_power_dB = -5;
+         forgetfact                       = 0;  
+         offset                           = 0;      
+         ds_tdl                           = 0;      
+@@ -38,7 +38,7 @@ channelmod = {
+         model_name                       = "rfsimu_channel_ue1"
+       	type                             = "AWGN";			  
+       	ploss_dB                         = 0;
+-        noise_power_dB = -10; 
++        noise_power_dB = -5;
+         forgetfact                       = 0;  
+         offset                           = 0;      
+         ds_tdl                           = 0;      
+@@ -47,7 +47,7 @@ channelmod = {
+         model_name                       = "rfsimu_channel_ue2"
+       	type                             = "AWGN";			  
+       	ploss_dB                         = 0;
+-        noise_power_dB = -10; 
++        noise_power_dB = -5;
+         forgetfact                       = 0;  
+         offset                           = 0;      
+         ds_tdl                           = 0;      

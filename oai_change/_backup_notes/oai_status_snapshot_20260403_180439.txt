@@ -1,0 +1,17 @@
+=== git status --short ===
+ M openair1/PHY/NR_UE_ESTIMATION/nr_dl_channel_estimation.c
+ M openair1/PHY/NR_UE_TRANSPORT/nr_dlsch_demodulation.c
+ M openair1/SCHED_NR_UE/phy_procedures_nr_ue.c
+ M targets/PROJECTS/GENERIC-NR-5GC/CONF/channelmod_rfsimu.conf
+?? openair1/PHY/NR_UE_ESTIMATION/nr_dl_channel_estimation.c.bak_nvar1024
+?? openair1/PHY/NR_UE_TRANSPORT/nr_dlsch_demodulation.c.bak
+?? openair1/PHY/NR_UE_TRANSPORT/nr_dlsch_demodulation.c.bak2
+?? openair1/PHY/NR_UE_TRANSPORT/nr_dlsch_demodulation.c.bak_rxdataFext_dump
+?? openair1/SCHED_NR_UE/phy_procedures_nr_ue.c.bak_spx_snr_print
+
+=== git diff --stat ===
+ .../PHY/NR_UE_ESTIMATION/nr_dl_channel_estimation.c     |  2 +-
+ openair1/PHY/NR_UE_TRANSPORT/nr_dlsch_demodulation.c    | 17 +++++++++++++++++
+ openair1/SCHED_NR_UE/phy_procedures_nr_ue.c             |  9 +++++++++
+ .../PROJECTS/GENERIC-NR-5GC/CONF/channelmod_rfsimu.conf | 10 +++++-----
+ 4 files changed, 32 insertions(+), 6 deletions(-)

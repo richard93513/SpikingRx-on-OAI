@@ -502,6 +502,15 @@ static void nr_ue_measurement_procedures(uint16_t l,
         T_INT((int)ue->measurements.wideband_cqi_avg[0]),
         T_INT((int)ue->common_vars.freq_offset));
 #endif
+
+    LOG_I(PHY,
+          "[SPX_SNR] frame=%d slot=%d snr_db=%d rx_power_db=%d n0_db=%d wideband_cqi=%d\n",
+          proc->frame_rx,
+          nr_slot_rx,
+          ue->measurements.rx_power_avg_dB[0] - ue->measurements.n0_power_avg_dB,
+          ue->measurements.rx_power_avg_dB[0],
+          ue->measurements.n0_power_avg_dB,
+          ue->measurements.wideband_cqi_avg[0]);
   }
 
   // accumulate and filter timing offset estimation every subframe (instead of every frame)
