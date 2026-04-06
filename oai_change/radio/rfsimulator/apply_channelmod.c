@@ -21,12 +21,57 @@
 *      contact@openairinterface.org
 */
 
-
 #include <complex.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include <math.h>
 #include <common/utils/LOG/log.h>
 #include <openair1/SIMULATION/TOOLS/sim.h>
 #include "openair2/LAYER2/NR_MAC_gNB/mac_config.h"
 #include "rfsimulator.h"
+
+#define MAX_SNR_SAMPLES          50000
+#define TARGET_SNR_WINDOWS       8
+#define MIN_VALID_SNR_SAMPLES    2048
+
+static int cmp_double_desc(const void *a, const void *b)
+{
+  const double da = *(const double *)a;
+  const double db = *(const double *)b;
+  if (db > da) return 1;
+  if (db < da) return -1;
+  return 0;
+}
+
+static void spx_dump_snr_summary(double noise_power_db, double snr_top10_db, int used_windows)
+{
+  const char *home = getenv("HOME");
+  char path[1024];
+
+  if (home && home[0] != '\0')
+    snprintf(path, sizeof(path), "%s/SpikingRx-on-OAI/spx_records/raw/snr_top10_run_summary.txt", home);
+  else
+    snprintf(path, sizeof(path), "./snr_top10_run_summary.txt");
+
+  FILE *fp = fopen(path, "a");
+  if (!fp) {
+    printf("[SPX_SNR_DUMP] fopen failed: %s\n", path);
+    return;
+  }
+
+  fprintf(fp,
+          "noise_power_db=%.3f snr_top10_db=%.6f used_windows=%d\n",
+          noise_power_db,
+          snr_top10_db,
+          used_windows);
+  fclose(fp);
+
+  printf("[SPX_SNR_DUMP] path=%s noise_power_db=%.3f snr_top10_db=%.6f used_windows=%d\n",
+         path,
+         noise_power_db,
+         snr_top10_db,
+         used_windows);
+}
 
 /*
   Legacy study:
@@ -52,6 +97,25 @@ void rxAddInput(const c16_t *input_sig,
                 bool add_noise)
 {
   static uint64_t last_TS = 0;
+
+  /*
+   * SPX SNR aggregation state
+   * - reset automatically when noise_power_dB changes
+   * - only rxAnt==0 participates
+   * - collect a few valid windows, each window computes top10% SNR
+   * - final dump = average of those window-level top10% SNRs
+   */
+  static int    spx_snr_dump_done = 0;
+  static int    spx_snr_windows = 0;
+  static double spx_snr_linear_acc = 0.0;
+  static double spx_last_noise_power_db = 1e300;
+
+  if (fabs(channelDesc->noise_power_dB - spx_last_noise_power_db) > 1e-12) {
+    spx_snr_dump_done = 0;
+    spx_snr_windows = 0;
+    spx_snr_linear_acc = 0.0;
+    spx_last_noise_power_db = channelDesc->noise_power_dB;
+  }
 
   if ((channelDesc->sat_height > 0) && (channelDesc->enable_dynamic_delay || channelDesc->enable_dynamic_Doppler)) { // model for transparent satellite on circular orbit
     /* assumptions:
@@ -147,11 +211,6 @@ void rxAddInput(const c16_t *input_sig,
             .velocity.Y = vel_sat_y / 0.06,
             .velocity.Z = vel_sat_z / 0.06,
         };
-        // Here we update the SIB19 information directly in the gNB MAC layer.
-        // Without rf-simulaor, in a real system or with an external channel emulator, the SIB19 updates would
-        // be provided via an external interface (e.g. O-RAN E2 interface) to the MAC layer (in the O-DU).
-        // We do it directly here, because we can, and an E2 Interface implementation (e.g using FlexRIC)
-        // would pull too many dependencies into rf-simulator, just for updating SIB19.
         nr_update_sib19(&sat_position);
       }
     } else {
@@ -192,41 +251,36 @@ void rxAddInput(const c16_t *input_sig,
   }
 
   // channelDesc->path_loss_dB should contain the total path gain
-  // so, in actual RF: tx gain + path loss + rx gain (+antenna gain, ...)
-  // UE and NB gain control to be added
-  // Fixme: not sure when it is "volts" so dB is 20*log10(...) or "power", so dB is 10*log10(...)
-  const double pathLossLinear = pow(10,channelDesc->path_loss_dB/20.0);
+  const double pathLossLinear = pow(10, channelDesc->path_loss_dB / 20.0);
   // Energy in one sample to calibrate input noise
-  // the normalized OAI value seems to be 256 as average amplitude (numerical amplification = 1)
-  const double noise_per_sample = add_noise ? pow(10,channelDesc->noise_power_dB/10.0) * 256 : 0;
-  printf("[CHANMOD] add_noise=%d noise_power_dB=%f noise_per_sample=%e\n",
-       add_noise, channelDesc->noise_power_dB, noise_per_sample);
+  const double noise_per_sample = add_noise ? pow(10, channelDesc->noise_power_dB / 10.0) * 256 : 0;
   const uint64_t dd = channelDesc->channel_offset;
-  const int nbTx=channelDesc->nb_tx;
+  const int nbTx = channelDesc->nb_tx;
   double Doppler_phase_cur = channelDesc->Doppler_phase_cur[rxAnt];
+
+  /*
+   * We only collect SNR samples on rxAnt==0 and only until final dump is done.
+   * That keeps the runtime much lower than "every slot always sort".
+   */
+  const int spx_collect_snr = (rxAnt == 0 && !spx_snr_dump_done);
+  double snr_list[MAX_SNR_SAMPLES];
+  int snr_count = 0;
+
   Doppler_phase_cur -= 2 * M_PI * round(Doppler_phase_cur / (2 * M_PI));
 
-  for (int i=0; i<nbSamples; i++) {
+  for (int i = 0; i < nbSamples; i++) {
     cf_t *out_ptr = after_channel_sig + i;
-    struct complexd rx_tmp= {0};
+    struct complexd rx_tmp = {0};
 
-    for (int txAnt=0; txAnt < nbTx; txAnt++) {
-      const struct complexd *channelModel= channelDesc->ch[rxAnt+(txAnt*channelDesc->nb_rx)];
+    for (int txAnt = 0; txAnt < nbTx; txAnt++) {
+      const struct complexd *channelModel = channelDesc->ch[rxAnt + (txAnt * channelDesc->nb_rx)];
 
-      //const struct complex *channelModelEnd=channelModel+channelDesc->channel_length;
-      for (int l = 0; l<(int)channelDesc->channel_length; l++) {
-        // let's assume TS+i >= l
-        // fixme: the rfsimulator current structure is interleaved antennas
-        // this has been designed to not have to wait a full block transmission
-        // but it is not very usefull
-        // it would be better to split out each antenna in a separate flow
-        // that will allow to mix ru antennas freely
-        // (X + cirSize) % cirSize to ensure that index is positive
+      for (int l = 0; l < (int)channelDesc->channel_length; l++) {
         const int idx = ((TS + i - l - dd) * nbTx + txAnt + CirSize) % CirSize;
         const struct complex16 tx16 = input_sig[idx];
         rx_tmp.r += tx16.r * channelModel[l].r - tx16.i * channelModel[l].i;
         rx_tmp.i += tx16.i * channelModel[l].r + tx16.r * channelModel[l].i;
-      } //l
+      }
     }
 
     if (channelDesc->Doppler_phase_inc != 0.0) {
@@ -241,19 +295,58 @@ void rxAddInput(const c16_t *input_sig,
       Doppler_phase_cur += channelDesc->Doppler_phase_inc;
     }
 
-    out_ptr->r += rx_tmp.r * pathLossLinear + noise_per_sample * gaussZiggurat(0.0, 1.0);
-    out_ptr->i += rx_tmp.i * pathLossLinear + noise_per_sample * gaussZiggurat(0.0, 1.0);
-    out_ptr++;
+    const double sig_r = rx_tmp.r * pathLossLinear;
+    const double sig_i = rx_tmp.i * pathLossLinear;
+    const double noise_r = noise_per_sample * gaussZiggurat(0.0, 1.0);
+    const double noise_i = noise_per_sample * gaussZiggurat(0.0, 1.0);
+
+    out_ptr->r += sig_r + noise_r;
+    out_ptr->i += sig_i + noise_i;
+
+    if (spx_collect_snr && snr_count < MAX_SNR_SAMPLES) {
+      const double sig_pow = sig_r * sig_r + sig_i * sig_i;
+      const double noise_pow = noise_r * noise_r + noise_i * noise_i;
+
+      if (sig_pow > 1e-6 && noise_pow > 0.0)
+        snr_list[snr_count++] = sig_pow / noise_pow;
+    }
   }
 
   channelDesc->Doppler_phase_cur[rxAnt] = Doppler_phase_cur;
 
-  if ( (TS*nbTx)%CirSize+nbSamples <= CirSize )
-    // Cast to a wrong type for compatibility !
-    LOG_D(HW,"Input power %f, output power: %f, channel path loss %f, noise coeff: %f \n",
-          10*log10((double)signal_energy((int32_t *)&input_sig[(TS*nbTx)%CirSize], nbSamples)),
-          10*log10((double)signal_energy((int32_t *)after_channel_sig, nbSamples)),
-          channelDesc->path_loss_dB,
-          10*log10(noise_per_sample));
-}
+  if (spx_collect_snr && snr_count >= MIN_VALID_SNR_SAMPLES) {
+    qsort(snr_list, snr_count, sizeof(double), cmp_double_desc);
 
+    int top_n = snr_count / 10;
+    if (top_n < 1)
+      top_n = 1;
+
+    double sum = 0.0;
+    for (int i = 0; i < top_n; i++)
+      sum += snr_list[i];
+
+    const double call_snr_linear = sum / top_n;
+    spx_snr_linear_acc += call_snr_linear;
+    spx_snr_windows++;
+
+    if (spx_snr_windows >= TARGET_SNR_WINDOWS) {
+      const double final_snr_linear = spx_snr_linear_acc / spx_snr_windows;
+      const double final_snr_db = 10 * log10(final_snr_linear);
+
+      printf("[SNR_TOP10_FINAL] noise_power_db=%.3f snr_db=%.6f used_windows=%d\n",
+             channelDesc->noise_power_dB,
+             final_snr_db,
+             spx_snr_windows);
+
+      spx_dump_snr_summary(channelDesc->noise_power_dB, final_snr_db, spx_snr_windows);
+      spx_snr_dump_done = 1;
+    }
+  }
+
+  if ((TS * nbTx) % CirSize + nbSamples <= CirSize)
+    LOG_D(HW,"Input power %f, output power: %f, channel path loss %f, noise coeff: %f \n",
+          10 * log10((double)signal_energy((int32_t *)&input_sig[(TS * nbTx) % CirSize], nbSamples)),
+          10 * log10((double)signal_energy((int32_t *)after_channel_sig, nbSamples)),
+          channelDesc->path_loss_dB,
+          10 * log10(noise_per_sample));
+}

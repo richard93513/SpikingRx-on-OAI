@@ -38,3 +38,6 @@ __pycache__/
 # Keep source code and notes tracked
 !docs/
 !docs/**
+
+__pycache__/
+*.pyc

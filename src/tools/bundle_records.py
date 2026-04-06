@@ -21,16 +21,10 @@ gNB:
   - f%04d_s%02d_txbits_idx%06d_rnti%04x_pdu%03d_rv%d_tbcrc%08x.bin
   - f%04d_s%02d_ldpc_idx%06d_rnti%04x_pdu%03d_rv%d_tbcrc%08x.json
 
-Notes
------
-- rnti accepts 4-hex-digit or 5-digit decimal strings.
-- One UE record is defined by (frame, slot, idx, rnti, harq).
-- UE LDPC json is used to obtain (dlsch_id, round, rv_index).
-- rm_exact uses tb=0 for current single-TB case.
-- pdsch_cfg is matched by (frame, slot, rnti, harq, cw),
-  because that filename does not carry idx.
-- eqsymb/chestext are optional supervision side-files keyed by
-  (frame, slot, idx, rnti, harq, symbol).
+Extra side file:
+  - snr_top10_run_summary.txt
+    This file, if present in RAW_DIR, will be copied to BUNDLE_DIR root
+    (outside all per-bundle folders).
 """
 
 import re
@@ -113,13 +107,6 @@ def copy_symbol_file_list(
     out_dir: Path,
     prefix: str,
 ) -> List[str]:
-    """
-    Copy:
-      symbol -> source path
-    into standardized names:
-      {prefix}_symXX.bin
-    return copied dst filenames sorted by symbol.
-    """
     copied: List[str] = []
     for sym in sorted(src_map.keys()):
         src = src_map[sym]
@@ -133,13 +120,6 @@ def check_symbol_completeness(
     symbol_map: Dict[int, Path],
     expected_symbols: List[int],
 ) -> Tuple[bool, List[int], List[int]]:
-    """
-    Returns:
-      complete, expected_sorted, present_sorted
-    Rule:
-      - if expected_symbols empty -> complete = (len(symbol_map) > 0)
-      - else exact set match
-    """
     present = sorted(symbol_map.keys())
     expected = sorted(expected_symbols)
     if not expected:
@@ -482,6 +462,14 @@ def scan_raw():
 def build_bundles():
     mkdir_p(BUNDLE_DIR)
 
+    # copy one global SNR summary file to bundle root, outside all bundle folders
+    snr_summary_src = RAW_DIR / "snr_top10_run_summary.txt"
+    snr_summary_dst = BUNDLE_DIR / "snr_top10_run_summary.txt"
+    snr_summary_copied = False
+    if snr_summary_src.exists():
+        shutil.copy2(snr_summary_src, snr_summary_dst)
+        snr_summary_copied = True
+
     (
         ue_r_parts,
         ue_ldpc_map,
@@ -518,12 +506,10 @@ def build_bundles():
     for uekr, parts in items:
         total += 1
 
-        # Need fullgrid + llr
         if "fullgrid" not in parts or "llr" not in parts:
             skipped_missing_ue_core += 1
             continue
 
-        # Find matching UE LDPC json
         cand_ldpc: List[Tuple[UEFullKey, Path]] = [
             (k, p)
             for (k, p) in ue_ldpc_map.items()
@@ -578,7 +564,6 @@ def build_bundles():
 
         ue_c_segs = ue_c_map.get(ue_fullk2, {})
 
-        # Current single-CW path: cw_id == dlsch_id
         cw_id = ue_dlsch
 
         pdsch_key = (
@@ -590,7 +575,6 @@ def build_bundles():
         )
         ue_pdsch_cfg = ue_pdsch_cfg_map.get(pdsch_key)
 
-        # rm_exact oracle
         rm_key = (uekr.frame, uekr.slot, uekr.idx, 0, ue_rv)
         rm_segs = ue_rm_exact_map.get(rm_key, {})
 
@@ -598,7 +582,6 @@ def build_bundles():
             skipped_missing_rm_exact += 1
             continue
 
-        # Matching gNB txbits/ldpc
         group_k = (uekr.frame, uekr.slot, uekr.idx, uekr.rnti, ue_rv)
         best = pick_best_gnb_candidate(gnb_groups.get(group_k, []))
         if best is None:
@@ -614,9 +597,6 @@ def build_bundles():
         )
         mkdir_p(out_dir)
 
-        # -------------------------------------------------
-        # Copy core files
-        # -------------------------------------------------
         shutil.copy2(parts["fullgrid"], out_dir / "fullgrid.bin")
         shutil.copy2(parts["llr"], out_dir / "demapper_llr_f32.bin")
         shutil.copy2(best.txbits, out_dir / "txbits.bin")
@@ -626,7 +606,6 @@ def build_bundles():
         if ue_pdsch_cfg is not None:
             shutil.copy2(ue_pdsch_cfg, out_dir / "pdsch_cfg.txt")
 
-        # rm_exact oracle
         rm_exact_list: List[str] = []
         for seg in sorted(rm_segs.keys()):
             src = rm_segs[seg]
@@ -634,7 +613,6 @@ def build_bundles():
             shutil.copy2(src, dst)
             rm_exact_list.append(dst.name)
 
-        # UE decoded CB payload oracle
         ue_c_list: List[str] = []
         for seg in sorted(ue_c_segs.keys()):
             src = ue_c_segs[seg]
@@ -642,7 +620,6 @@ def build_bundles():
             shutil.copy2(src, dst)
             ue_c_list.append(dst.name)
 
-        # ldpc_cfg.txt for ldpctest_spx
         cfg_kv = ldpc_json_to_cfg_txt(ue_ldpc, out_dir / "ldpc_cfg.txt")
 
         pdsch_cfg_kv = None
@@ -651,9 +628,6 @@ def build_bundles():
 
         expected_symbols = expected_symbol_list_from_pdsch_cfg(pdsch_cfg_kv)
 
-        # -------------------------------------------------
-        # Optional supervision side-files: eqsymb / chestext
-        # -------------------------------------------------
         eqsymb_src_map = ue_eqsymb_map.get(uekr, {})
         chestext_src_map = ue_chestext_map.get(uekr, {})
 
@@ -739,6 +713,8 @@ def build_bundles():
     summary = {
         "raw_dir": str(RAW_DIR),
         "bundle_dir": str(BUNDLE_DIR),
+        "snr_summary_copied": snr_summary_copied,
+        "snr_summary_file": str(snr_summary_dst) if snr_summary_copied else None,
         "total_ue_keys": total,
         "built": built,
         "skipped_missing_ue_core": skipped_missing_ue_core,
@@ -762,6 +738,9 @@ def main():
     s = build_bundles()
     print("[BUNDLE] raw_dir   =", s["raw_dir"])
     print("[BUNDLE] bundle_dir=", s["bundle_dir"])
+    print("[BUNDLE] snr_summary_copied =", s["snr_summary_copied"])
+    if s["snr_summary_file"] is not None:
+        print("[BUNDLE] snr_summary_file   =", s["snr_summary_file"])
     print("[BUNDLE] total UE keys =", s["total_ue_keys"])
     print("[BUNDLE] built =", s["built"])
     print("[BUNDLE] skipped_missing_ue_core =", s["skipped_missing_ue_core"])

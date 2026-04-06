@@ -9,7 +9,7 @@ import math
 import matplotlib.pyplot as plt
 
 
-SNAPSHOT_DIR = Path.home() / "SpikingRx-on-OAI" / "spx_records" / "snapshots"
+SNAPSHOT_DIR = Path.home() / "SpikingRx-on-OAI" / "spx_records" / "snapshots_snr"
 
 # ------------------------------------------------------------
 # valid-bundle policy
@@ -70,7 +70,9 @@ def noise_label_to_db(label: str) -> float:
 def format_db_value(x: float) -> str:
     if abs(x - round(x)) < 1e-9:
         return str(int(round(x)))
-    return f"{x:.1f}"
+    if abs(x * 10 - round(x * 10)) < 1e-9:
+        return f"{x:.1f}"
+    return f"{x:.2f}"
 
 
 def find_bundle_list(summary_obj):
@@ -358,7 +360,6 @@ def plot_ber_curve(rows, out_png: Path):
     x = [r["noise_db"] for r in rows]
     y = [r["group_ber_pred"] for r in rows]
 
-    # 全域圖保留 semilogy
     y_plot = [v if (isinstance(v, float) and v > 0.0) else 1e-12 for v in y]
 
     plt.figure(figsize=(8, 5))
@@ -373,11 +374,6 @@ def plot_ber_curve(rows, out_png: Path):
 
 
 def plot_ber_curve_zoom_left(rows, out_png: Path, x_min: float = -5.0, x_max: float = -4.0):
-    """
-    左肩局部圖：
-    - 只看 x in [x_min, x_max]
-    - 用線性 y 軸，比較容易看清 0 / 3e-4 / 1e-3 / 7e-3 / 3e-2
-    """
     rows_zoom = [r for r in rows if x_min <= r["noise_db"] <= x_max]
     if not rows_zoom:
         return
