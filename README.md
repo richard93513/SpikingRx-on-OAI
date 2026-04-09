@@ -1,71 +1,182 @@
-# SpikingRx for OAI NR PDSCH Decoding
+# SpikingRx-on-OAI
 
-SpikingRx is a spiking-neural-network receiver pipeline trained on full OpenAirInterface (OAI) 5G NR downlink resource grids.
+SpikingRx-on-OAI integrates a spiking neural receiver with the OpenAirInterface (OAI) 5G NR downlink PHY.
 
-The model takes the complete FFT-domain OFDM grid, predicts channel estimates, equalized symbols, and log-likelihood ratios (LLRs), then evaluates performance through the exact OAI rate-matching and LDPC decoding chain.
+The repository trains a spiking model directly on full FFT-domain OAI PDSCH resource grids, predicts channel / equalized symbols / LLRs, and evaluates the final result using the exact OAI rate-unmatching and LDPC decoder chain.
 
 ---
 
-## Overview
+## What This Repository Does
 
-This repository implements the following end-to-end pipeline:
+Traditional learning-based receivers often stop at one of the following:
+
+* Channel estimation MSE
+* Equalized symbol error
+* LLR correlation against a reference demapper
+
+This repository instead evaluates the complete receiver pipeline:
 
 ```text
-OAI full FFT grid
+OAI full-grid FFT dump
 → occupied-carrier reorder
-→ spiking encoder
-→ channel prediction
-→ equalization prediction
-→ LLR prediction
+→ spiking neural receiver
+→ predicted LLR
 → OAI rate unmatching
 → OAI LDPC decoding
-→ BER evaluation
+→ transport-block BER
 ```
 
-Unlike earlier experiments that used compressed 32×64 grids or only compared MSE against OAI intermediate outputs, this version uses:
-
-* Full rectangular OFDM grids: `[14, 1272]`
-* Full FFT-domain carrier extraction from OAI `fullgrid.bin`
-* Exact OpenAirInterface decoding tools:
-
-  * `rmunmatch_spx`
-  * `ldpctest_spx`
-* Final metric: transport-block BER against the original transmitted bits
+Therefore, the final metric is not intermediate reconstruction quality, but decoded transport-block BER.
 
 ---
 
-## Repository Structure
+## Full Pipeline
 
 ```text
-src/
-├── datasets/
-│   └── dataset_oai_bundle.py
-├── models/
-│   ├── spikingrx_model.py
-│   ├── sew_block.py
-│   ├── conv_block.py
-│   ├── norm_layer.py
-│   └── lif_neuron.py
-├── train/
-│   └── train_oai_serial.py
-├── inference/
-│   ├── infer_oai_serial.py
-│   └── check_oai_llr_decode.py
-└── utils/
-    ├── oai_to_spikingrx_tensor.py
-    └── visualize_fullgrid.py
+┌────────────────────────────┐
+│ OAI gNB / UE (rfsim mode)  │
+└──────────────┬─────────────┘
+               │
+               ▼
+┌────────────────────────────┐
+│ fullgrid.bin              │
+│ dmrs_mask.bin             │
+│ data_mask.bin             │
+│ demapper_llr_f32.bin      │
+│ txbits.bin                │
+└──────────────┬─────────────┘
+               │
+               ▼
+┌────────────────────────────┐
+│ oai_to_spikingrx_tensor.py │
+│ circular carrier reorder   │
+│ build [1,1,4,14,1272]      │
+└──────────────┬─────────────┘
+               │
+               ▼
+┌────────────────────────────┐
+│ SpikingRxModel            │
+│ ch → eq → llr             │
+└──────────────┬─────────────┘
+               │
+               ▼
+┌────────────────────────────┐
+│ inferred_llr.bin          │
+└──────────────┬─────────────┘
+               │
+               ▼
+┌────────────────────────────┐
+│ rmunmatch_spx             │
+│ ldpctest_spx              │
+└──────────────┬─────────────┘
+               │
+               ▼
+┌────────────────────────────┐
+│ decoded_bits.bin          │
+│ BER vs txbits.bin         │
+└────────────────────────────┘
 ```
-
-Legacy scripts from the older compressed-grid pipeline should be moved into a separate `legacy/` folder.
 
 ---
 
-## Dataset Format
-
-Each OAI sample bundle should contain:
+## Repository Layout
 
 ```text
-dataset_oai_bundle/
+SpikingRx-on-OAI/
+├── README.md
+├── requirements.txt
+├── docs/
+├── src/
+├── checkpoints/
+├── example_bundle/
+├── legacy/
+└── oai_change/
+    ├── CMakeLists.txt
+    ├── patches/
+    │   └── oai_local_changes.patch
+    ├── openair1/
+    │   └── PHY/
+    │       ├── CODING/
+    │       │   └── TESTBENCH/
+    │       │       ├── rmunmatch_spx.c
+    │       │       ├── ldpctest_spx.c
+    │       │       └── spx_ldpc_test.c
+    │       ├── NR_UE_ESTIMATION/
+    │       │   └── nr_dl_channel_estimation.c
+    │       ├── NR_UE_TRANSPORT/
+    │       │   ├── nr_dlsch_demodulation.c
+    │       │   └── nr_dlsch_decoding.c
+    │       └── NR_TRANSPORT/
+    │           └── nr_dlsch_coding.c
+    ├── radio/rfsimulator/
+    │   └── apply_channelmod.c
+    └── targets/PROJECTS/GENERIC-NR-5GC/CONF/
+```
+
+### Main Folders
+
+| Folder            | Purpose                                                                                              |
+| ----------------- | ---------------------------------------------------------------------------------------------------- |
+| `src/`            | Main training, inference, dataset, and model code                                                    |
+| `oai_change/`     | Local OpenAirInterface modifications used to dump internal PHY data and run exact decoder validation |
+| `docs/`           | Figures, BER curves, notes, screenshots                                                              |
+| `checkpoints/`    | Trained model weights                                                                                |
+| `example_bundle/` | Minimal example of required OAI dump files                                                           |
+| `legacy/`         | Old compressed-grid experiments and deprecated versions                                              |
+
+### Purpose of `oai_change/`
+
+The `oai_change/` folder contains the OpenAirInterface source modifications required to generate the dataset and evaluate the neural receiver.
+
+These changes are used for three purposes:
+
+1. Dump internal PHY tensors from OAI UE processing:
+
+   * full FFT-domain received grid
+   * channel estimate
+   * equalized symbols
+   * demapper LLRs
+   * transport-block bits
+
+2. Add exact decoder-side validation tools:
+
+   * `rmunmatch_spx`
+   * `ldpctest_spx`
+
+3. Provide a reproducible modified OAI tree and patch file.
+
+Important modified files include:
+
+| File                         | Purpose                                                      |
+| ---------------------------- | ------------------------------------------------------------ |
+| `nr_dl_channel_estimation.c` | Dump FFT-domain received grid and channel estimation results |
+| `nr_dlsch_demodulation.c`    | Dump equalized symbols and demapper LLRs                     |
+| `nr_dlsch_decoding.c`        | Export decoder-side intermediate data                        |
+| `nr_dlsch_coding.c`          | Export transmitted transport-block bits                      |
+| `rmunmatch_spx.c`            | Convert predicted LLRs into OAI LDPC decoder input format    |
+| `ldpctest_spx.c`             | Run standalone LDPC decoding on the predicted LLRs           |
+| `oai_local_changes.patch`    | Patch file for reproducing all OAI modifications             |
+
+To rebuild the decoder-side validation tools:
+
+```bash
+cd oai_change/openair1/PHY/CODING/TESTBENCH
+make
+```
+
+This produces:
+
+```text
+rmunmatch_spx
+ldpctest_spx
+```
+
+## Example Dataset Bundle
+
+Each sample bundle should contain:
+
+```text
+example_bundle/sample_0001/
 ├── fullgrid.bin
 ├── dmrs_mask.bin
 ├── data_mask.bin
@@ -73,37 +184,27 @@ dataset_oai_bundle/
 ├── txbits.bin
 ├── ldpc_cfg.txt
 ├── pdsch_cfg.txt
+├── ue_tb.bin
+├── ue_c_seg00.bin
 └── ...
 ```
 
-### Input Tensor
-
-The final network input is:
-
-```text
-[B, T, C, H, W] = [B, 1, 4, 14, 1272]
-```
-
-where the 4 channels are:
-
-1. Real part of received grid
-2. Imaginary part of received grid
-3. DMRS mask
-4. Data RE mask
+Do not upload large raw datasets into the repository. Only include a small example folder or a text tree showing the required files.
 
 ---
 
-## Carrier Reordering
+## Critical Preprocessing: Carrier Reordering
 
-The most important preprocessing step is converting the OAI full FFT dump into the actual occupied NR carrier region.
+OAI stores the complete FFT buffer in `fullgrid.bin`.
+The occupied NR carriers wrap around the FFT index and cannot be extracted with a simple slice.
 
-Incorrect older code:
+Incorrect:
 
 ```python
-grid_full[:, first_sc:first_sc+used_sc]
+grid_used = grid_full[:, first_sc:first_sc+used_sc]
 ```
 
-Correct implementation:
+Correct:
 
 ```python
 first_carrier_offset = n_sc_full - (used_sc // 2)
@@ -111,20 +212,37 @@ idx = (np.arange(used_sc) + first_carrier_offset) % n_sc_full
 grid_used = grid_full[:, idx]
 ```
 
-This circular reorder is required because the occupied NR carriers wrap around the FFT buffer.
+Without this circular reorder:
 
-Without this step:
-
+* DMRS mask becomes misaligned
 * Heatmaps appear shifted
-* DMRS and data masks do not align
-* LLR prediction fails
-* BER becomes meaningless
+* Equalization targets become incorrect
+* BER evaluation fails
+
+---
+
+## Network Input
+
+The current model input tensor is:
+
+```text
+[B, T, C, H, W] = [B, 1, 4, 14, 1272]
+```
+
+Input channels:
+
+| Channel | Meaning                         |
+| ------- | ------------------------------- |
+| 0       | Real part of received grid      |
+| 1       | Imaginary part of received grid |
+| 2       | DMRS mask                       |
+| 3       | Data mask                       |
 
 ---
 
 ## Model Architecture
 
-`SpikingRxModel` uses a serial prediction pipeline:
+The model uses a serial prediction structure:
 
 ```text
 shared spiking encoder
@@ -133,7 +251,7 @@ shared spiking encoder
 → LLR head
 ```
 
-More specifically:
+Detailed dependency:
 
 ```text
 feat
@@ -142,7 +260,7 @@ feat
 → llr_head(feat + ch_pred + eq_pred)
 ```
 
-### Outputs
+Outputs:
 
 ```text
 pred["ch"]  : [B, 2, 14, 1272]
@@ -150,109 +268,128 @@ pred["eq"]  : [B, 2, 14, 1272]
 pred["llr"] : [B, G]
 ```
 
-Current implementation assumptions:
+Current assumptions:
 
 * QPSK only
 * `bits_per_symbol = 2`
 * `T = 1`
+* `C = 1`
 
-The LLR ordering is:
+LLR bit order:
 
 ```text
 RE0(bit0, bit1), RE1(bit0, bit1), ...
 ```
 
-This ordering must exactly match the expected input ordering of `rmunmatch_spx`.
+---
+
+## Installation
+
+```bash
+git clone https://github.com/richard93513/SpikingRx-on-OAI.git
+cd SpikingRx-on-OAI
+pip install -r requirements.txt
+```
+
+If using GPU:
+
+```bash
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+```
 
 ---
 
-## Training
-
-Example:
+## How to Train
 
 ```bash
 python src/train/train_oai_serial.py \
-    --dataset dataset_oai_bundle \
+    --dataset ./dataset_oai_bundle \
     --epochs 100 \
-    --batch-size 8
+    --batch-size 8 \
+    --lr 1e-4
 ```
 
-Training target:
+Typical output:
 
-* Channel estimate
-* Equalized symbols
-* OAI demapper LLRs
+```text
+checkpoints/spikingrx_oai_serial_best.pt
+```
 
-Recommended primary objective:
+Recommended loss structure:
 
 ```text
 loss = w_ch * L_ch + w_eq * L_eq + w_llr * L_llr
 ```
 
-where `L_llr` should dominate because the final decoding performance is determined mainly by LLR quality.
+with `w_llr` as the dominant term.
 
 ---
 
-## Inference
-
-Example:
+## How to Run Inference
 
 ```bash
 python src/inference/infer_oai_serial.py \
-    --bundle dataset_oai_bundle/sample_0001 \
-    --ckpt checkpoints/spikingrx_oai_serial_best.pt
+    --bundle example_bundle/sample_0001 \
+    --ckpt checkpoints/spikingrx_oai_serial_best.pt \
+    --out inferred_llr.bin
 ```
 
-The inference script should:
+This command:
 
-1. Load the OAI bundle
-2. Build the `[1,1,4,14,1272]` tensor
-3. Run `SpikingRxModel`
-4. Save predicted LLRs to a binary file
+1. Loads the OAI bundle
+2. Builds the `[1,1,4,14,1272]` tensor
+3. Runs `SpikingRxModel`
+4. Writes predicted LLRs to `inferred_llr.bin`
 
 ---
 
-## BER Evaluation Through OAI Decoder
-
-To evaluate predicted LLRs:
+## How to Evaluate BER
 
 ```bash
 python src/inference/check_oai_llr_decode.py \
     inferred_llr.bin \
-    ldpc_cfg.txt \
-    pdsch_cfg.txt \
-    txbits.bin \
-    --rmunmatch ./rmunmatch_spx \
-    --ldpctest ./ldpctest_spx
+    example_bundle/sample_0001/ldpc_cfg.txt \
+    example_bundle/sample_0001/pdsch_cfg.txt \
+    example_bundle/sample_0001/txbits.bin \
+    --rmunmatch ./oai_change/rmunmatch_spx \
+    --ldpctest ./oai_change/ldpctest_spx \
+    --llr-scale 1.0
 ```
 
-This script performs:
+The script performs:
 
 ```text
-predicted LLR
+inferred_llr.bin
 → rmunmatch_spx
+→ rm_exact_spx_seg00_i8.bin
 → ldpctest_spx
 → decoded_bits.bin
-→ compare with txbits.bin
+→ compare against txbits.bin
 → BER
+```
+
+Expected output:
+
+```text
+[RESULT] BER=0.012500 bit_errors=13/1040
 ```
 
 ---
 
-## LLR Scale Tuning
+## LLR Magnitude Tuning
 
-The decoder is sensitive to LLR magnitude.
+The LDPC decoder is highly sensitive to LLR scale.
 
-Useful values to sweep:
+Try:
 
-```text
+```bash
 --llr-scale 0.5
 --llr-scale 1.0
 --llr-scale 2.0
 --llr-scale 4.0
 ```
 
-The effective decoder input magnitude is approximately:
+because the effective decoder input is approximately:
 
 ```text
 network_output / llr_temperature × llr_scale
@@ -262,7 +399,7 @@ network_output / llr_temperature × llr_scale
 
 ## Output Metadata
 
-`check_oai_llr_decode.py` writes a JSON file:
+`check_oai_llr_decode.py` writes `oai_decode_meta.json`:
 
 ```json
 {
@@ -271,36 +408,30 @@ network_output / llr_temperature × llr_scale
   "C": 1,
   "llr_scale": 1.0,
   "ber": 0.023,
-  "bit_errors": 24
+  "bit_errors": 24,
+  "rmunmatch_rc": 0,
+  "ldpctest_rc": 0
 }
 ```
-
-This metadata also includes:
-
-* Decoder return codes
-* File statistics
-* Oracle comparison results
-* Paths used during the run
 
 ---
 
 ## Current Limitations
 
 * QPSK only
-* Currently assumes `C = 1`
-* Only `seg00` is decoded in the LDPC stage
-* Single-slot input (`T = 1`)
-* No support yet for 16QAM / 64QAM / 256QAM
+* Single code block (`C = 1`)
+* Only `seg00` is decoded
+* Single slot (`T = 1`)
+* No 16QAM / 64QAM / 256QAM support yet
 
 ---
 
 ## Future Work
 
 * Multi-codeblock support (`C > 1`)
-* Higher-order modulation
+* Higher-order modulation support
 * BLER vs SNR evaluation
-* Temporal input (`T > 1`)
-* Compare against classical MMSE receiver
-* Export trained model for FPGA / neuromorphic deployment
-
----
+* Multi-slot temporal input (`T > 1`)
+* Comparison against classical MMSE receivers
+* More complete OAI patch automation
+* FPGA or neuromorphic deployment
