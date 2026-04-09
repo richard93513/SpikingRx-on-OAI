@@ -1,0 +1,794 @@
+# SpikingRx-on-OAI 專題百科全書
+
+## 0. 專題核心目標
+
+本專題的最終目標，是將傳統 5G NR 接收機中的三個 receiver 模組：
+
+1. Channel Estimation
+2. Equalization
+3. Soft Demapping
+
+以一個 Spiking Neural Network receiver（SpikingRx）取代。
+
+整個接收流程由：
+
+```text
+5G NR OFDM received grid
+→ full OFDM grid dump
+→ SpikingRx inference
+→ output LLR
+→ rate unmatching
+→ LDPC decode
+→ decoded bits
+→ BER / BLER evaluation
+```
+
+並與傳統 OAI receiver 流程比較：
+
+```text
+full OFDM grid
+→ OAI channel estimation
+→ equalization
+→ demapper
+→ OAI LLR
+→ same decoder
+→ BER
+```
+
+目的是驗證：
+
+* SpikingRx 是否可以取代傳統 receiver 三模組
+* BER / BLER 是否與 OAI demapper 接近
+* 在不同 noise / SNR 下是否仍然穩定
+* 是否能畫出 BER vs SNR 曲線
+* 是否能將 OAI 真實接收資料送入神經 receiver
+
+---
+
+# 1. 整體系統架構
+
+## 1.1 傳統 OAI Receiver 流程
+
+```text
+Received IQ samples
+→ FFT
+→ OFDM grid
+→ Channel Estimation
+→ Equalization
+→ Soft Demapper
+→ LLR
+→ Rate Unmatching
+→ LDPC Decoder
+→ decoded bits
+```
+
+其中：
+
+* Channel Estimation：利用 DMRS 做 LS estimation，再 interpolation
+* Equalization：使用 LMMSE 或 MMSE
+* Demapper：將 constellation symbol 轉成 soft bits (LLR)
+
+SpikingRx 取代的是：
+
+```text
+Channel Estimation + Equalization + Demapper
+```
+
+留下：
+
+```text
+Rate Unmatching + LDPC Decoder
+```
+
+---
+
+## 1.2 最終 SpikingRx Receiver 流程
+
+```text
+Received OFDM full grid
+→ normalize / reshape
+→ SpikingRx SNN
+→ output LLR
+→ rmunmatch_spx
+→ ldpctest_spx
+→ BER
+```
+
+最後 decoder 一律共用，因此比較公平。
+
+---
+
+# 2. Full Grid 的定義
+
+專題後期已確定：
+
+未來一律使用 full-grid version，不再使用 partial grid。
+
+Full grid 大小：
+
+```text
+14 OFDM symbols × 1272 subcarriers
+```
+
+如果包含複數資訊，則每個 resource element 需要：
+
+```text
+real + imag
+```
+
+若再額外加上 noise / channel 等 feature，可能形成：
+
+```text
+[14, 1272, 4]
+```
+
+後續最終版本採用的 feature 數需要依 inference script 最後版確認，但在討論中曾出現：
+
+* 2 channels：real / imag
+* 4 channels：real / imag / estimated channel real / imag
+
+你後來已確認 full grid 的格式是最終正式格式。
+
+---
+
+# 3. 專案資料夾結構
+
+你的 SpikingRx-on-OAI 專案最終固定結構：
+
+```text
+~/SpikingRx-on-OAI/
+├── venv/
+├── src/
+│   ├── data/
+│   ├── inference/
+│   ├── models/
+│   ├── tests/
+│   ├── train/
+│   └── visualize/
+├── checkpoints/
+├── docs/
+```
+
+## 3.1 venv/
+
+虛擬環境位置：
+
+```text
+~/SpikingRx-on-OAI/venv/
+```
+
+啟動方式：
+
+```bash
+source ~/SpikingRx-on-OAI/venv/bin/activate
+```
+
+---
+
+## 3.2 src/data/
+
+存放：
+
+* dataset loader
+* dump 讀取器
+* npy / csv / binary parser
+* normalization
+* reshape
+
+可能包含：
+
+```text
+load_fullgrid.py
+load_llr.py
+load_bits.py
+```
+
+---
+
+## 3.3 src/models/
+
+存放 SNN / ANN receiver 模型。
+
+例如：
+
+```text
+sew_resnet.py
+spikingrx.py
+lif.py
+```
+
+其中最重要的是 SEW-ResNet 架構。
+
+---
+
+## 3.4 src/train/
+
+存放訓練程式。
+
+例如：
+
+```text
+train_spikingrx.py
+train_ann.py
+loss.py
+```
+
+---
+
+## 3.5 src/inference/
+
+你最重要、最常改動的部分。
+
+存放：
+
+* OAI dump 載入
+* reshape
+* normalization
+* model inference
+* LLR output
+* decoder 串接
+
+例如：
+
+```text
+run_inference.py
+infer_fullgrid.py
+oai_to_spikingrx.py
+```
+
+---
+
+## 3.6 src/tests/
+
+用來驗證：
+
+* dump 是否正確
+* shape 是否正確
+* BER 是否正確
+* decoder 是否正確
+
+---
+
+## 3.7 src/visualize/
+
+用來畫：
+
+* BER vs SNR
+* BER vs noise_power
+* constellation
+* histogram
+* LLR distribution
+* noise 分佈
+* signal / noise / channel 統計
+
+---
+
+# 4. OAI Dump 流程
+
+你整個專題最重要的一部分，是把 OAI receiver 內部資料 dump 出來。
+
+---
+
+## 4.1 dump 的目的
+
+因為 SpikingRx 不能直接接進 OAI receiver 裡，因此需要：
+
+1. 在 OAI receiver 某一點 dump data
+2. 將資料存檔
+3. 用 Python 載入
+4. 做 inference
+5. 再送回 decoder
+
+---
+
+## 4.2 dump 的資料
+
+你曾經 dump 過：
+
+* full OFDM grid
+* transmitted bits
+* OAI demapper LLR
+* decoded bits
+* nvar
+* noise_power_dB
+* channel estimate
+* equalized symbols
+* HARQ PID
+
+---
+
+## 4.3 nvar dump
+
+你後來確認：
+
+OAI dump 出來的 nvar 需要乘上：
+
+```text
+1024
+```
+
+也就是：
+
+```text
+real noise variance = dumped_nvar / 1024
+```
+
+或依 dump 寫法反向處理。
+
+你後來發現原本算出來的 noise 非常怪，就是因為沒有考慮這個 factor。
+
+---
+
+## 4.4 HARQ PID
+
+你後來檢查多個 pdsch dump，發現：
+
+只有 HARQ PID 會變。
+
+但 HARQ PID 不會影響同一個 transport block 的內容與 BER，因此不需要特別處理。
+
+---
+
+# 5. 為什麼 BER vs noise_power 不夠
+
+一開始你做的是：
+
+```text
+noise_power_dB → BER
+```
+
+但後來發現這不是真正有意義的比較。
+
+因為：
+
+不同 frame 的 signal power 不同。
+
+真正應該比較的是：
+
+```text
+SNR = signal power / noise power
+```
+
+或 dB：
+
+```text
+SNR_dB = 10 log10(signal_power / noise_power)
+```
+
+因此最終必須改成：
+
+```text
+BER vs SNR
+```
+
+---
+
+# 6. Signal Power 與 Noise Power 的取得
+
+## 6.1 Noise Power
+
+Noise power 可由：
+
+```text
+nvar
+```
+
+得到。
+
+但 nvar 還不夠，因為必須知道 signal power。
+
+---
+
+## 6.2 Signal Power
+
+你後來決定：
+
+從 full grid dump 中，直接估計 signal power。
+
+公式：
+
+```text
+P_signal = mean(|x|^2)
+```
+
+其中：
+
+```text
+x = received grid complex sample
+```
+
+若：
+
+```text
+x = I + jQ
+```
+
+則：
+
+```text
+|x|^2 = I^2 + Q^2
+```
+
+因此：
+
+```text
+P_signal = mean(I^2 + Q^2)
+```
+
+---
+
+## 6.3 SNR 計算
+
+```text
+SNR_linear = P_signal / P_noise
+```
+
+```text
+SNR_dB = 10 log10(SNR_linear)
+```
+
+---
+
+# 7. Top-10 Dump 策略
+
+你後來不再 dump 全部 resource elements，而改成：
+
+只記錄 top 10。
+
+例如：
+
+* 最大 noise RE
+* 最大 signal RE
+* 最大 channel error
+* 最大 LLR error
+
+原因：
+
+* dump 太大
+* 難分析
+* 檔案爆炸
+
+因此之後的 debug 原則：
+
+只保留 top10。
+
+---
+
+# 8. 最終保留與刪除的 dump
+
+## 必須保留
+
+* fullgrid dump
+* nvar dump
+* signal power dump
+* SpikingRx LLR
+* OAI LLR
+* decoded bits
+* BER 結果
+* top10 統計
+
+## 應刪除
+
+* 舊版 partial-grid dump
+* 舊版 noise-only dump
+* 大量完整 RE dump
+* 不再使用的 debug printf
+
+---
+
+# 9. ldpctest_spx 的角色
+
+你後來明確決定：
+
+```text
+ldpctest_spx 只能保留 LDPC decode 功能
+```
+
+不能再混進：
+
+* demapper
+* equalizer
+* channel estimation
+
+否則就不是純 decoder。
+
+因此 ldpctest_spx 的唯一輸入必須是：
+
+```text
+LLR
+```
+
+唯一輸出：
+
+```text
+decoded bits
+```
+
+---
+
+# 10. rmunmatch_spx 的角色
+
+在 LDPC decode 前，必須先做：
+
+```text
+rate unmatching
+```
+
+流程：
+
+```text
+LLR
+→ deinterleave
+→ circular buffer reverse
+→ puncture recovery
+→ LDPC input
+```
+
+因此：
+
+```text
+SpikingRx output
+→ rmunmatch_spx
+→ ldpctest_spx
+```
+
+不可跳過。
+
+---
+
+# 11. SpikingRx 模型細節
+
+SpikingRx 是基於：
+
+```text
+SEW-ResNet + LIF neuron
+```
+
+---
+
+## 11.1 輸入
+
+輸入是 full OFDM grid。
+
+形狀：
+
+```text
+[14, 1272, C]
+```
+
+其中 C 為 feature channels。
+
+---
+
+## 11.2 輸出
+
+輸出為：
+
+```text
+LLR vector
+```
+
+長度取決於 modulation 與 code rate。
+
+例如 QPSK：
+
+```text
+2 bits / symbol
+```
+
+16QAM：
+
+```text
+4 bits / symbol
+```
+
+64QAM：
+
+```text
+6 bits / symbol
+```
+
+---
+
+## 11.3 LIF Neuron
+
+LIF：
+
+```text
+V[t+1] = λV[t] + I[t] - S[t]V_th
+```
+
+其中：
+
+* V[t]：membrane potential
+* λ：leak factor
+* I[t]：input current
+* V_th：threshold
+* S[t]：是否發 spike
+
+當：
+
+```text
+V[t] ≥ V_th
+```
+
+則：
+
+```text
+S[t] = 1
+```
+
+否則：
+
+```text
+S[t] = 0
+```
+
+---
+
+## 11.4 Surrogate Gradient
+
+因 spike 不可微，因此使用 surrogate gradient。
+
+你研究過 triangular surrogate：
+
+```text
+σ'(x) = max(0, 1 - |x|/a)
+```
+
+這樣就能做 backpropagation。
+
+---
+
+# 12. 訓練與推論差異
+
+你後來確認：
+
+inference pipeline 沒有改。
+
+改的是 training。
+
+也就是：
+
+```text
+train different
+infer same
+```
+
+推論仍然：
+
+```text
+fullgrid → SpikingRx → LLR
+```
+
+---
+
+# 13. 你整個專題的主要實驗分類
+
+## A. Dump 正確性驗證
+
+驗證：
+
+* shape
+* frame 對應
+* bits 是否對齊
+* fullgrid 是否正確
+
+---
+
+## B. Noise Sweep
+
+改變：
+
+```text
+noise_power_dB
+```
+
+觀察：
+
+```text
+BER
+```
+
+---
+
+## C. BER vs SNR
+
+最終正式實驗。
+
+流程：
+
+```text
+noise → signal/noise → SNR → BER
+```
+
+畫：
+
+```text
+BER vs SNR
+```
+
+比較：
+
+* OAI demapper
+* SpikingRx
+
+---
+
+## D. LLR 比較
+
+比較：
+
+```text
+SpikingRx LLR
+vs
+OAI LLR
+```
+
+方式：
+
+* histogram
+* correlation
+* MSE
+* top10 error
+
+---
+
+## E. Decoder 結果比較
+
+比較：
+
+```text
+decoded bits
+```
+
+是否與 ground truth 一致。
+
+---
+
+# 14. 視覺化內容
+
+你曾經或預計畫的圖：
+
+1. BER vs noise_power_dB
+2. BER vs SNR
+3. OAI vs SpikingRx BER
+4. LLR histogram
+5. Noise histogram
+6. Signal power histogram
+7. SNR distribution
+8. Top10 最大誤差
+9. Constellation before equalization
+10. Constellation after equalization
+11. SpikingRx output distribution
+
+---
+
+# 15. 你電腦與執行環境
+
+你目前環境：
+
+* Ubuntu 20.04.6 LTS
+* Lenovo 筆電
+* Intel i7-6700HQ
+* 32GB RAM
+* GTX 950M
+
+因此：
+
+* 可跑小型 SNN inference
+* 訓練較慢
+* 若大量 BER sweep，建議 batch 小一點
+
+---
+
+# 16. 專題最終結論方向
+
+你整個專題最後要證明：
+
+1. SpikingRx 可直接接收 full OFDM grid
+2. 可輸出 LLR
+3. 可成功接上 OAI decoder
+4. BER 與傳統 OAI receiver 接近
+5. 在不同 SNR 下仍有效
+6. 未來可作為 6G neuromorphic receiver 候選
