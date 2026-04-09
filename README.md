@@ -304,20 +304,3 @@ This metadata also includes:
 * Export trained model for FPGA / neuromorphic deployment
 
 ---
-
-## Why the README Should Be in English
-
-For GitHub projects, the README is usually written in English because:
-
-* More researchers and developers can understand it
-* Easier to share in papers and portfolios
-* Makes the project look complete and professional
-
-If desired, you can later add:
-
-```text
-README.md        ← English
-README_zh.md     ← Chinese explanation
-```
-
-The English README should remain the main project homepage.
