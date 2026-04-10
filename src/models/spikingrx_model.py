@@ -27,7 +27,7 @@ from .lif_neuron import LIF
 class StemConv(nn.Module):
     def __init__(self, in_ch, out_ch, beta=0.9, theta=0.2, input_gain=5.0):
         super().__init__()
-        self.conv = ConvBlock(in_ch, out_ch, kernel_size=3, stride=1, padding=1)
+        self.conv = ConvBloc k(in_ch, out_ch, kernel_size=3, stride=1, padding=1)
         self.norm = SpikeNorm(out_ch)
         self.lif = LIF(beta=beta, theta=theta)
         self.input_gain = input_gain
