@@ -1,43 +1,68 @@
+# =========================
 # Python Virtual Env
+# =========================
 .venv/
 venv/
 env/
 
-# Local records / dumps
-spx_records/
+# =========================
+# Ignore bundle content but KEEP folder structure
+# =========================
+spx_records/snapshots_snr/bundle_noise_power_*/*
 
-# Local bundles / archives
-*.bundle
+# keep empty placeholder
+!spx_records/snapshots_snr/bundle_noise_power_*/.keep
 
+# =========================
+# Ignore large dataset JSON (move to Drive)
+# =========================
+spx_records/snapshots_snr/*batch_summary*.json
+spx_records/snapshots_snr/oai_decode_detail.json
+
+# =========================
+# Keep plots / summaries
+# =========================
+!spx_records/snapshots_snr/*.png
+!spx_records/snapshots_snr/*.csv
+!spx_records/snapshots_snr/llr_*/
+!spx_records/snapshots_snr/*metrics*/
+!spx_records/snapshots_snr/*scatter*/
+!spx_records/snapshots_snr/*hist*/
+
+# =========================
 # Python Cache
+# =========================
 __pycache__/
 *.pyc
 *.pyo
 
-# Jupyter Notebook Cache
+# =========================
+# Jupyter
+# =========================
 .ipynb_checkpoints/
 
-# Logs / temporary
+# =========================
+# Logs / temp
+# =========================
 *.log
 *.tmp
 
-# IDE / Editor
+# =========================
+# IDE
+# =========================
 .vscode/
 .idea/
 
-# Optional media ignore
-*.gif
-
-# Local model / array / binary outputs
+# =========================
+# Models / binaries
+# =========================
 *.pth
 *.pt
 *.npy
-*.npz
 *.bin
 
-# Keep source code and notes tracked
+# =========================
+# Docs (keep)
+# =========================
 !docs/
 !docs/**
-
-__pycache__/
-*.pyc
