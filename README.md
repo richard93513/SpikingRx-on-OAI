@@ -1,175 +1,76 @@
 # SpikingRx-on-OAI
 
-SpikingRx-on-OAI integrates a spiking neural receiver with the OpenAirInterface (OAI) 5G NR downlink PHY.
+SpikingRx-on-OAI integrates a spiking neural network-based receiver into the OpenAirInterface (OAI) 5G NR downlink physical layer.
 
-The repository trains a spiking model directly on full FFT-domain OAI PDSCH resource grids, predicts channel / equalized symbols / LLRs, and evaluates the final result using the exact OAI rate-unmatching and LDPC decoder chain.
-
----
-
-## 🧠 Why This Project Matters
-
-Most learning-based receivers are evaluated using intermediate metrics such as:
-
-- Channel estimation MSE  
-- Equalized symbol error  
-- LLR correlation  
-
-These do not reflect the **actual communication system performance**.
-
-This project evaluates the **full 5G receiver pipeline**, where the final metric is:
-
-👉 **Transport Block BER after LDPC decoding**
-
-```text
-Neural Receiver → LLR → LDPC → BER
-```
-
-This makes the evaluation directly comparable to real communication systems.
+The system performs end-to-end learning on full FFT-domain PDSCH resource grids and outputs log-likelihood ratios (LLRs), which are evaluated through the standard OAI rate recovery and LDPC decoding chain.
 
 ---
 
-## 🚀 Quick Start
+## 1. Motivation
 
-### Clone repo
+Conventional learning-based wireless receivers are typically evaluated using proxy metrics such as:
 
-```bash
-git clone https://github.com/richard93513/SpikingRx-on-OAI.git
-cd SpikingRx-on-OAI
-pip install -r requirements.txt
+- Channel estimation mean squared error (MSE)
+- Symbol-level error after equalization
+- LLR correlation or distribution similarity
+
+However, these metrics do not directly reflect system-level communication performance.
+
+This project evaluates receiver performance using the final communication metric:
+
+> **Transport Block Error Rate (BER) after LDPC decoding**
+
+The evaluation is fully aligned with standard 5G NR receiver behavior:
+
 ```
+Receiver → LLR → LDPC decoding → BER
+```
+
+This enables a direct comparison between neural receivers and the conventional OAI demapper-based receiver.
 
 ---
 
-### Run inference on example bundle
+## 2. System Overview
 
-```bash
-python src/inference/infer_oai_serial.py \
-    --bundle example_bundle/sample_0001 \
-    --ckpt checkpoints/spikingrx_oai_serial_best.pt \
-    --out inferred_llr.bin
+The complete processing chain is:
+
 ```
+OAI full-grid FFT output
+→ carrier reordering
+→ SpikingRx inference
+→ LLR estimation
+→ rate de-matching (OAI)
+→ LDPC decoding (OAI)
+→ BER computation
+```
+
+A baseline system is defined as:
+
+```
+OAI demapper LLR → LDPC decoding → BER
+```
+
+Both systems are evaluated under identical channel realizations and dataset conditions.
 
 ---
 
-### Run BER evaluation
-
-```bash
-python src/inference/check_oai_llr_decode.py \
-    inferred_llr.bin \
-    example_bundle/sample_0001/ldpc_cfg.txt \
-    example_bundle/sample_0001/pdsch_cfg.txt \
-    example_bundle/sample_0001/txbits.bin \
-    --rmunmatch ./oai_change/rmunmatch_spx \
-    --ldpctest ./oai_change/ldpctest_spx
-```
-
----
-
-## 🔁 Full Pipeline
-
-```text
-OAI full-grid FFT dump
-→ carrier reorder
-→ SpikingRx
-→ predicted LLR
-→ OAI rmunmatch
-→ OAI LDPC decode
-→ BER
-```
-
----
-
-## 📊 Results
-
-### BER vs SNR
-
-The model is evaluated using full end-to-end decoding:
-
-```text
-SpikingRx LLR → LDPC → BER
-vs
-OAI demapper LLR → LDPC → BER
-```
-
----
-
-### Results are stored in:
-
-```
-spx_records/snapshots_snr/
-```
-
----
-
-### Key outputs:
-
-```
-compare_spikingrx_vs_oai_ber_vs_snr.png
-noise_sweep_ber_curve.png
-llr_metrics_vs_snr/
-llr_scatter_cases/
-llr_diff_hist_cases/
-```
-
----
-
-### These include:
-
-- BER vs SNR comparison  
-- LLR correlation analysis  
-- Scatter plots and histogram analysis  
-
----
-
-## 📁 Repository Layout
+## 3. Repository Structure
 
 ```
 SpikingRx-on-OAI/
-├── src/                # training / inference / models
-├── oai_change/         # modified OpenAirInterface
-├── spx_records/        # experiment results & plots
-├── checkpoints/        # trained weights
-├── example_bundle/     # minimal dataset example
-├── docs/               # notes and figures
+├── src/                # training, inference, evaluation
+├── oai_change/         # modified OpenAirInterface modules
+├── spx_records/        # experimental outputs and logs
+├── checkpoints/        # trained model parameters
+├── example_bundle/     # minimal runnable dataset
+├── docs/               # documentation and notes
 ```
 
 ---
 
-## 🔧 OAI Modifications (oai_change/)
+## 4. Dataset Format
 
-This folder contains all OpenAirInterface modifications.
-
----
-
-### Purpose
-
-- Dump internal PHY tensors:
-  - FFT-domain received grid  
-  - channel estimation  
-  - equalized symbols  
-  - demapper LLR  
-  - transport block bits  
-
-- Provide decoder validation tools:
-  - rmunmatch_spx  
-  - ldpctest_spx  
-
-- Enable full reproducibility via patch file  
-
----
-
-### Build tools
-
-```bash
-cd oai_change/openair1/PHY/CODING/TESTBENCH
-make
-```
-
----
-
-## 📦 Dataset Format
-
-Each bundle contains:
+Each data bundle corresponds to one transmission instance and contains:
 
 ```
 fullgrid.bin
@@ -181,41 +82,49 @@ ldpc_cfg.txt
 pdsch_cfg.txt
 ```
 
+These files represent:
+
+- FFT-domain received resource grid
+- DMRS and data allocation masks
+- Baseline demapper LLR outputs
+- Ground-truth transmitted bits
+- Channel coding configuration
+
 ---
 
-## 🧠 Model
+## 5. Model Specification
 
-### Input
+### Input Tensor
 
 ```
 [B, T, C, H, W] = [B, 1, 4, 14, 1272]
 ```
 
----
+### Channel Definition
 
-### Channels
-
-| Channel | Meaning |
-|--------|--------|
-| 0 | real |
-| 1 | imag |
-| 2 | DMRS mask |
-| 3 | data mask |
-
----
+| Channel | Description |
+|----------|-------------|
+| 0 | Real part of received signal |
+| 1 | Imaginary part |
+| 2 | DMRS allocation mask |
+| 3 | Data allocation mask |
 
 ### Architecture
 
+The model follows a modular design:
+
 ```
-shared encoder
-→ channel head
-→ equalization head
-→ LLR head
+Shared encoder
+→ Channel estimation head
+→ Equalization head
+→ LLR prediction head
 ```
+
+The output is a soft bit representation compatible with the OAI LDPC decoding pipeline.
 
 ---
 
-## 🏋️ Training
+## 6. Training
 
 ```bash
 python src/train/train_oai_serial.py \
@@ -224,85 +133,98 @@ python src/train/train_oai_serial.py \
     --batch-size 8
 ```
 
----
-
-## 📉 BER Evaluation
-
-### Pipeline
-
-```
-LLR
-→ rmunmatch_spx
-→ LDPC decode
-→ BER
-```
+Training is performed on full FFT-domain resource grids with supervised learning on reference LLRs.
 
 ---
 
-## ⚠️ Important Detail: Carrier Reordering
+## 7. Inference
 
-OAI FFT grid requires circular indexing:
+```bash
+python src/inference/infer_oai_serial.py \
+    --bundle example_bundle/sample_0001 \
+    --ckpt checkpoints/spikingrx_oai_serial_best.pt \
+    --out inferred_llr.bin
+```
+
+---
+
+## 8. BER Evaluation
+
+```bash
+python src/inference/check_oai_llr_decode.py \
+    inferred_llr.bin \
+    example_bundle/sample_0001/ldpc_cfg.txt \
+    example_bundle/sample_0001/pdsch_cfg.txt \
+    example_bundle/sample_0001/txbits.bin \
+    --rmunmatch ./oai_change/rmunmatch_spx \
+    --ldpctest ./oai_change/ldpctest_spx
+```
+
+The evaluation follows the standard OAI decoding chain:
+
+```
+LLR → rate de-matching → LDPC decoding → BER
+```
+
+---
+
+## 9. Carrier Reordering
+
+OAI FFT grids use circular frequency indexing. Proper alignment is required:
 
 ```python
 idx = (np.arange(used_sc) + first_carrier_offset) % n_sc_full
 ```
 
-Without this:
+Incorrect reordering leads to:
 
 - DMRS misalignment  
-- wrong equalization  
-- invalid BER  
+- incorrect channel estimation  
+- invalid BER computation  
 
 ---
 
-## ❗ Limitations
+## 10. Experimental Outputs
 
-- QPSK only  
-- single codeblock  
-- single slot  
-- no higher-order modulation  
-
----
-
-## 🔭 Future Work
-
-- multi-codeblock decoding  
-- higher-order modulation (16QAM / 64QAM)  
-- BLER evaluation  
-- temporal modeling (T > 1)  
-- comparison with classical receivers  
-- hardware / neuromorphic deployment  
-
----
-
-# 🔥 Final Conclusion
-
-This repository:
-
-👉 is already suitable for academic review  
-👉 can be used as graduate application project material  
-👉 represents a full end-to-end neural receiver research pipeline  
-
----
-
-## 🧭 Optional Upgrade (next level)
-
-If extended further, recommended additions:
-
-### 📌 architecture figure
+All evaluation results are stored under:
 
 ```
-[ PLACE ARCHITECTURE DIAGRAM HERE ]
+spx_records/snapshots_snr/
 ```
 
-### 📌 BER vs SNR figure
+Typical outputs include:
 
-```
-[ PLACE MAIN RESULT FIGURE HERE ]
-```
+- BER vs SNR evaluation
+- SpikingRx vs OAI performance comparison
+- LLR statistical analysis
+- Case-wise performance breakdown
 
 ---
 
-Then this repository becomes:
+## 11. Evaluation Scope
 
-🔥 **publication-ready research codebase**
+The current implementation is limited to:
+
+- QPSK modulation
+- Single codeblock transmission
+- Single OFDM slot processing
+- AWGN channel model
+
+---
+
+## 12. Future Work
+
+Planned extensions include:
+
+- Support for higher-order modulation schemes (16QAM / 64QAM)
+- Multi-codeblock decoding
+- Block error rate (BLER) evaluation
+- Temporal sequence modeling across multiple slots
+- Comparison with classical MMSE-based receivers
+- Hardware / neuromorphic deployment
+
+---
+
+## 13. Summary
+
+This repository implements a full end-to-end neural receiver integrated into a standard 5G NR PHY stack. The evaluation is performed at the system level (post-LDPC BER), enabling direct comparison between learned and conventional demodulation pipelines under identical channel conditions.
