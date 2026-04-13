@@ -230,7 +230,7 @@ LLR
 
 ---
 
-## 📊 Experimental Results
+## Experimental Results
 
 All results are stored under:
 
@@ -303,8 +303,7 @@ Generated during evaluation:
 - BLER evaluation  
 - Temporal modeling across slots  
 - Comparison with classical MMSE receivers  
-- Hardware / neuromorphic deployment  
-```
+- Hardware / neuromorphic deployment
 
 ---
 
