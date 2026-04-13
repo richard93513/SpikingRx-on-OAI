@@ -305,3 +305,46 @@ Generated during evaluation:
 - Comparison with classical MMSE receivers  
 - Hardware / neuromorphic deployment  
 ```
+
+---
+
+## Dataset (Google Drive)
+
+Due to the size and file granularity of the raw OAI dumps, the dataset is distributed as a compressed archive via Google Drive:
+
+```
+https://drive.google.com/file/d/1vO04jncqe-hFHiepl01yRuGgezznBQ16/view?usp=sharing
+```
+
+---
+
+### Contents
+
+The archive contains processed experimental outputs located under:
+
+```text
+spx_records/snapshots_snr/
+```
+
+The provided data includes:
+
+- BER vs SNR evaluation results (SpikingRx and OAI baseline)
+- Noise sweep summaries
+- LLR statistical analysis (correlation, histogram, scatter)
+- Case-wise evaluation across different SNR regimes
+
+---
+
+### Notes
+
+- Raw bundle data (e.g., `*.bin`, `bundle_noise_power_*`) is not included due to storage constraints.
+- Only processed results and visualization outputs are provided.
+- The dataset is packaged as a `.tar.gz` archive for efficient distribution.
+
+---
+
+### Extraction
+
+```bash
+tar -xzvf snapshots_snr.tar.gz
+```
