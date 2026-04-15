@@ -29,8 +29,10 @@ OAI full-grid FFT dump
 → OAI LDPC decoding
 → transport-block BER
 ```
-
 ---
+
+## Receiver Comparison Setup
+<img width="1189" height="4405" alt="mermaid-diagram" src="https://github.com/user-attachments/assets/09489b3b-b6e8-4c8e-928a-2fe11b8cb382" />
 
 ## Full Pipeline
 
