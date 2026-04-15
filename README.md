@@ -6,32 +6,33 @@ The system performs end-to-end learning on full FFT-domain PDSCH resource grids 
 
 ---
 
-## What This Repository Does
+## Receiver Comparison Setup
 
-Traditional learning-based receivers are typically evaluated using intermediate metrics such as:
+This work performs a **controlled receiver-level comparison**.
 
-- Channel estimation MSE  
-- Equalized symbol error  
-- LLR correlation against a reference demapper  
+Instead of comparing two independent systems, we use the **same OAI full-grid FFT data** and evaluate two receiver implementations under identical conditions:
 
-These metrics do not directly reflect system-level communication performance.
+- Original OAI receiver (channel estimation + equalization + demapping)
+- SpikingRx receiver (replacing the above modules)
 
-This repository evaluates the full receiver chain using the final metric:
+Both outputs are fed into the **same decoding chain**:
 
-> **Transport Block Error Rate (BER) after LDPC decoding**
+- Rate dematching (`rmunmatch_spx`)
+- LDPC decoding (`ldpctest_spx`)
 
-```text
-OAI full-grid FFT dump
-→ occupied-carrier reorder
-→ spiking neural receiver
-→ predicted LLR
-→ OAI rate unmatching
-→ OAI LDPC decoding
-→ transport-block BER
-```
+The final metric is computed by comparing decoded bits with the original transmitted bits (`txbits`).
+
+### Key Properties
+
+- Identical input data (same full-grid dump)
+- Identical channel realization
+- Identical decoding process
+- Only the receiver is changed
+
+This ensures that performance differences (BER) are solely due to the receiver design.
+
 ---
 
-## Receiver Comparison Setup
 <img width="2054" height="8192" alt="5G NR OAI Full-Grid SNN-2026-04-15-063342" src="https://github.com/user-attachments/assets/fd7a7891-5aa2-4c30-9feb-3e19c5dfbb9c" />
 
 
