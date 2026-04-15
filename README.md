@@ -2,7 +2,7 @@
 
 SpikingRx-on-OAI integrates a spiking neural network-based receiver into the OpenAirInterface (OAI) 5G NR downlink physical layer.
 
-The system performs end-to-end learning on full FFT-domain PDSCH resource grids and outputs log-likelihood ratios (LLRs), which are evaluated through the standard OAI rate recovery and LDPC decoding chain.
+The system performs end-to-end learning on full FFT-domain PDSCH resource grids and outputs log-likelihood ratios (LLRs), which are evaluated through the standard OAI rate recovery and LDPC decoding chain. The spiking dynamics introduce temporal sparsity and nonlinear thresholding, which acts as implicit denoising on FFT-domain complex-valued inputs, improving robustness under low SNR regimes.
 
 ---
 
@@ -10,10 +10,12 @@ The system performs end-to-end learning on full FFT-domain PDSCH resource grids 
 
 This work performs a **controlled receiver-level comparison**.
 
-Instead of comparing two independent systems, we use the **same OAI full-grid FFT data** and evaluate two receiver implementations under identical conditions:
+Instead of comparing two independent systems, we use the **same OAI full-grid FFT data** and evaluate two receiver implementations under identical conditions. **Both receivers operate on identical FFT-domain samples extracted from the same OAI execution trace under identical noise realization and channel state.**
 
-- Original OAI receiver (channel estimation + equalization + demapping)
-- SpikingRx receiver (replacing the above modules)
+SpikingRx replaces the entire PHY receiver frontend, while preserving the 3GPP-compliant LDPC decoding backend unchanged:
+
+- **Original OAI receiver** (channel estimation + equalization + demapping)
+- **SpikingRx receiver** (replacing the entire frontend: H estimation → equalization → soft demapping)
 
 Both outputs are fed into the **same decoding chain**:
 
@@ -35,7 +37,6 @@ This ensures that performance differences (BER) are solely due to the receiver d
 
 <img width="2054" height="8192" alt="5G NR OAI Full-Grid SNN-2026-04-15-063342" src="https://github.com/user-attachments/assets/fd7a7891-5aa2-4c30-9feb-3e19c5dfbb9c" />
 
-
 ## Full Pipeline
 
 ```text
@@ -45,11 +46,11 @@ This ensures that performance differences (BER) are solely due to the receiver d
                │
                ▼
 ┌────────────────────────────┐
-│ fullgrid.bin              │
-│ dmrs_mask.bin             │
-│ data_mask.bin             │
-│ demapper_llr_f32.bin      │
-│ txbits.bin                │
+│ fullgrid.bin               │
+│ dmrs_mask.bin              │
+│ data_mask.bin              │
+│ demapper_llr_f32.bin       │
+│ txbits.bin                 │
 └──────────────┬─────────────┘
                │
                ▼
@@ -61,25 +62,25 @@ This ensures that performance differences (BER) are solely due to the receiver d
                │
                ▼
 ┌────────────────────────────┐
-│ SpikingRxModel            │
-│ ch → eq → llr             │
+│ SpikingRxModel             │
+│ ch → eq → llr              │
 └──────────────┬─────────────┘
                │
                ▼
 ┌────────────────────────────┐
-│ inferred_llr.bin          │
+│ inferred_llr.bin           │
 └──────────────┬─────────────┘
                │
                ▼
 ┌────────────────────────────┐
-│ rmunmatch_spx             │
-│ ldpctest_spx              │
+│ rmunmatch_spx              │
+│ ldpctest_spx               │
 └──────────────┬─────────────┘
                │
                ▼
 ┌────────────────────────────┐
-│ decoded_bits.bin          │
-│ BER vs txbits.bin         │
+│ decoded_bits.bin           │
+│ BER vs txbits.bin          │
 └────────────────────────────┘
 ```
 
@@ -136,6 +137,10 @@ ldpc_cfg.txt
 pdsch_cfg.txt
 ```
 
+### Dataset Selection Policy
+
+Bundles are selected chronologically after the removal of the PHY warm-up transient region. Only steady-state samples are used to avoid initialization bias. No random sampling is applied within a noise condition.
+
 ---
 
 ## Carrier Reordering (Critical)
@@ -145,6 +150,8 @@ OAI FFT indexing is circular and must be explicitly reconstructed:
 ```python
 idx = (np.arange(used_sc) + first_carrier_offset) % n_sc_full
 ```
+
+OAI FFT indexing follows circular FFT bin mapping due to NR resource grid wrapping. Direct slicing leads to DMRS misalignment and incorrect LLR supervision. Therefore, circular permutation is required to restore true subcarrier ordering.
 
 Failure to apply correct indexing results in:
 
@@ -185,6 +192,18 @@ ch  : [B, 2, 14, 1272]
 eq  : [B, 2, 14, 1272]
 llr : [B, G]
 ```
+
+---
+
+## LLR Calibration
+
+SpikingRx outputs are temperature-scaled LLRs:
+
+```text
+LLR' = LLR / T, where T = 2.0
+```
+
+This ensures statistical compatibility with the OAI demapper LLR distribution before LDPC decoding, preventing downstream decoding failures caused by distribution mismatch.
 
 ---
 
@@ -266,11 +285,13 @@ spx_records/snapshots_snr/
 
 ## BER Reporting Convention
 
-BER is computed at transport block level:
+BER is computed at the transport block level after LDPC decoding:
 
 ```text
 BER = (# of erroneous bits) / (total transmitted bits)
 ```
+
+Final BER per SNR point is averaged across `N` valid bundles.
 
 Typical behavior:
 
@@ -298,6 +319,11 @@ Generated during evaluation:
 - Single slot processing (`T = 1`)  
 - AWGN channel only  
 
+**This work does not claim:**
+- Improvement in channel coding performance.
+- Superiority over the optimal MMSE receiver under all SNR regimes.
+- Generalization beyond AWGN and the current OAI configuration.
+
 ---
 
 ## Future Work
@@ -315,8 +341,8 @@ Generated during evaluation:
 
 Due to the size and file granularity of the raw OAI dumps, the dataset is distributed as a compressed archive via Google Drive:
 
-```
-https://drive.google.com/file/d/1vO04jncqe-hFHiepl01yRuGgezznBQ16/view?usp=sharing
+```text
+[https://drive.google.com/file/d/1vO04jncqe-hFHiepl01yRuGgezznBQ16/view?usp=sharing](https://drive.google.com/file/d/1vO04jncqe-hFHiepl01yRuGgezznBQ16/view?usp=sharing)
 ```
 
 ---
