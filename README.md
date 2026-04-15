@@ -1,8 +1,8 @@
 # SpikingRx-on-OAI
 
-SpikingRx-on-OAI integrates a spiking neural network-based receiver into the OpenAirInterface (OAI) 5G NR downlink physical layer.
+SpikingRx-on-OAI integrates a spiking neural network-based receiver into the OpenAirInterface (OAI) 5G NR downlink PHY.
 
-The system performs end-to-end learning on full FFT-domain PDSCH resource grids and outputs log-likelihood ratios (LLRs), which are evaluated through the standard OAI rate recovery and LDPC decoding chain.
+The system performs end-to-end inference on FFT-domain PDSCH resource grids and produces log-likelihood ratios (LLRs), which are evaluated through the standard OAI rate recovery and LDPC decoding chain.
 
 ---
 
@@ -13,26 +13,47 @@ This project implements a **receiver-level replacement study** in a controlled 5
 We compare two receivers under strictly identical conditions:
 
 ### (1) Baseline Receiver (OAI)
-- Channel estimation (LS + interpolation)
-- Equalization (LMMSE)
-- Soft demapping (LLR generation)
+
+- Channel estimation (LS + interpolation)  
+- Equalization (LMMSE)  
+- Soft demapping (LLR generation)  
 
 ### (2) Proposed Receiver (SpikingRx)
-- Spiking neural network (SEW-ResNet + LIF dynamics)
+
+- Spiking neural network (SEW-ResNet with LIF dynamics)  
 - Direct prediction of:
-  - Channel estimate
-  - Equalized symbols
-  - Log-likelihood ratios (LLRs)
+  - Channel estimate  
+  - Equalized symbols  
+  - Log-likelihood ratios (LLRs)  
 
 ---
 
 ## System Architecture
 
-<img width="2054" height="8192" alt="5G NR OAI Full-Grid SNN-2026-04-15-063342" src="https://github.com/user-attachments/assets/fd7a7891-5aa2-4c30-9feb-3e19c5dfbb9c" />
+<img src="https://github.com/user-attachments/assets/fd7a7891-5aa2-4c30-9feb-3e19c5dfbb9c" width="100%">
 
 ---
 
-# 2. Experimental Fairness Principle
+# 2. System Model
+
+We consider a SISO OFDM-based 5G NR downlink system:
+
+```
+Y[k] = H[k] X[k] + N[k]
+```
+
+where:
+
+- \(X[k]\): transmitted symbol  
+- \(H[k]\): channel response  
+- \(N[k]\): AWGN  
+- \(Y[k]\): received signal  
+
+The objective is to recover the transmitted transport block bits from \(Y[k]\).
+
+---
+
+# 3. Experimental Fairness Principle
 
 To ensure a valid system-level comparison:
 
@@ -43,15 +64,9 @@ To ensure a valid system-level comparison:
 
 Only the **receiver frontend is replaced**.
 
-### Formal Statement
-
-Both receivers operate on identical FFT-domain samples extracted from the same OAI execution trace under identical channel state and noise realization.
-
-This ensures that all performance differences (BER/LLR behavior) are solely attributable to the receiver design.
-
 ---
 
-# 3. Full Pipeline
+# 4. Full Pipeline
 
 ```text
 ┌────────────────────────────┐
@@ -70,7 +85,7 @@ This ensures that all performance differences (BER/LLR behavior) are solely attr
                ▼
 ┌────────────────────────────┐
 │ oai_to_spikingrx_tensor.py │
-│ - circular carrier reorder │
+│ - circular reorder         │
 │ - tensor reshape           │
 │ - output [1,1,4,14,1272]   │
 └──────────────┬─────────────┘
@@ -78,8 +93,7 @@ This ensures that all performance differences (BER/LLR behavior) are solely attr
                ▼
 ┌────────────────────────────┐
 │ SpikingRxModel             │
-│ SEW-ResNet + LIF neurons   │
-│ ch → eq → llr prediction   │
+│ ch → eq → llr              │
 └──────────────┬─────────────┘
                │
                ▼
@@ -102,7 +116,7 @@ This ensures that all performance differences (BER/LLR behavior) are solely attr
 
 ---
 
-# 4. Dataset Format (Bundle Structure)
+# 5. Dataset Format
 
 Each bundle contains:
 
@@ -118,70 +132,48 @@ pdsch_cfg.txt
 
 ---
 
-# 5. Carrier Reordering (Critical)
-
-OAI FFT indexing follows circular resource mapping:
+# 6. Carrier Reordering (Critical)
 
 ```python
 idx = (np.arange(used_sc) + first_carrier_offset) % n_sc_full
 ```
 
-### Why necessary
-
 Without this:
 
-- DMRS alignment breaks  
-- channel estimation target incorrect  
-- LLR supervision invalid  
-- BER comparison becomes meaningless  
+- DMRS misalignment  
+- incorrect supervision  
+- invalid BER  
 
 ---
 
-# 6. Input Representation
+# 7. Input Representation
 
 ```
 [B, T, C, H, W] = [B, 1, 4, 14, 1272]
 ```
 
-| Channel | Description |
-|--------|------------|
-| 0 | Real part |
-| 1 | Imag part |
-| 2 | DMRS mask |
-| 3 | Data mask |
-
 ---
 
-# 7. Model Architecture
+# 8. Model Architecture
 
 ```
-shared spiking encoder
-→ channel estimation head
+shared encoder
+→ channel head
 → equalization head
-→ LLR prediction head
-```
-
-Outputs:
-
-```
-ch  : [B, 2, H, W]
-eq  : [B, 2, H, W]
-llr : [B, G]
+→ LLR head
 ```
 
 ---
 
-# 8. LLR Calibration
+# 9. LLR Calibration
 
 ```
 LLR' = LLR / T   (T = 2.0)
 ```
 
-Ensures compatibility with OAI LDPC decoder.
-
 ---
 
-# 9. Training
+# 10. Training
 
 ```bash
 python src/train/train_spikingrx_oai.py \
@@ -192,7 +184,7 @@ python src/train/train_spikingrx_oai.py \
 
 ---
 
-# 10. Inference
+# 11. Inference
 
 ```bash
 python src/inference/infer_oai_serial.py \
@@ -203,7 +195,7 @@ python src/inference/infer_oai_serial.py \
 
 ---
 
-# 11. BER Evaluation
+# 12. BER Evaluation
 
 ```bash
 python src/inference/check_oai_llr_decode.py \
@@ -217,22 +209,14 @@ python src/inference/check_oai_llr_decode.py \
 
 ---
 
-# 12. Metric Definition
+# 13. Metric Definition
 
 ```
 BER = (# erroneous bits) / (total transmitted bits)
 ```
 
-- computed after LDPC decoding  
+- post-LDPC  
 - averaged across bundles  
-
----
-
-# 13. Dataset Selection Policy
-
-- warm-up bundles removed  
-- only steady-state data used  
-- deterministic selection  
 
 ---
 
@@ -259,11 +243,6 @@ Includes:
 - single code block  
 - single slot  
 - AWGN channel  
-
-Not claimed:
-
-- universal superiority  
-- coding gain improvement  
 
 ---
 
@@ -301,8 +280,8 @@ https://drive.google.com/file/d/1vO04jncqe-hFHiepl01yRuGgezznBQ16/view
 # 19. Notes
 
 - Raw OAI dumps are not included due to storage constraints  
-- Only processed snapshots and evaluation results are provided  
-- All results are reproducible from bundle format  
+- Only processed results are provided  
+- Fully reproducible from bundle format  
 
 ---
 
