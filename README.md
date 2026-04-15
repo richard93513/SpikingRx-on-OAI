@@ -2,42 +2,56 @@
 
 SpikingRx-on-OAI integrates a spiking neural network-based receiver into the OpenAirInterface (OAI) 5G NR downlink physical layer.
 
-The system performs end-to-end learning on full FFT-domain PDSCH resource grids and outputs log-likelihood ratios (LLRs), which are evaluated through the standard OAI rate recovery and LDPC decoding chain. The spiking dynamics introduce temporal sparsity and nonlinear thresholding, which acts as implicit denoising on FFT-domain complex-valued inputs, improving robustness under low SNR regimes.
+The system performs end-to-end learning on full FFT-domain PDSCH resource grids and outputs log-likelihood ratios (LLRs), which are evaluated through the standard OAI rate recovery and LDPC decoding chain.
 
 ---
 
-## Receiver Comparison Setup
+# 1. System Overview
 
-This work performs a **controlled receiver-level comparison**.
+This project implements a **receiver-level replacement study** in a controlled 5G NR simulation environment.
 
-Instead of comparing two independent systems, we use the **same OAI full-grid FFT data** and evaluate two receiver implementations under identical conditions. **Both receivers operate on identical FFT-domain samples extracted from the same OAI execution trace under identical noise realization and channel state.**
+We compare two receivers under strictly identical conditions:
 
-SpikingRx replaces the entire PHY receiver frontend, while preserving the 3GPP-compliant LDPC decoding backend unchanged:
+### (1) Baseline Receiver (OAI)
+- Channel estimation (LS + interpolation)
+- Equalization (LMMSE)
+- Soft demapping (LLR generation)
 
-- **Original OAI receiver** (channel estimation + equalization + demapping)
-- **SpikingRx receiver** (replacing the entire frontend: H estimation → equalization → soft demapping)
-
-Both outputs are fed into the **same decoding chain**:
-
-- Rate dematching (`rmunmatch_spx`)
-- LDPC decoding (`ldpctest_spx`)
-
-The final metric is computed by comparing decoded bits with the original transmitted bits (`txbits`).
-
-### Key Properties
-
-- Identical input data (same full-grid dump)
-- Identical channel realization
-- Identical decoding process
-- Only the receiver is changed
-
-This ensures that performance differences (BER) are solely due to the receiver design.
+### (2) Proposed Receiver (SpikingRx)
+- Spiking neural network (SEW-ResNet + LIF dynamics)
+- Direct prediction of:
+  - Channel estimate
+  - Equalized symbols
+  - Log-likelihood ratios (LLRs)
 
 ---
+
+## System Architecture
 
 <img width="2054" height="8192" alt="5G NR OAI Full-Grid SNN-2026-04-15-063342" src="https://github.com/user-attachments/assets/fd7a7891-5aa2-4c30-9feb-3e19c5dfbb9c" />
 
-## Full Pipeline
+---
+
+# 2. Experimental Fairness Principle
+
+To ensure a valid system-level comparison:
+
+- Identical FFT-domain input grids  
+- Identical channel realizations  
+- Identical noise conditions  
+- Identical LDPC decoding backend  
+
+Only the **receiver frontend is replaced**.
+
+### Formal Statement
+
+Both receivers operate on identical FFT-domain samples extracted from the same OAI execution trace under identical channel state and noise realization.
+
+This ensures that all performance differences (BER/LLR behavior) are solely attributable to the receiver design.
+
+---
+
+# 3. Full Pipeline
 
 ```text
 ┌────────────────────────────┐
@@ -56,14 +70,16 @@ This ensures that performance differences (BER) are solely due to the receiver d
                ▼
 ┌────────────────────────────┐
 │ oai_to_spikingrx_tensor.py │
-│ circular carrier reorder   │
-│ build [1,1,4,14,1272]      │
+│ - circular carrier reorder │
+│ - tensor reshape           │
+│ - output [1,1,4,14,1272]   │
 └──────────────┬─────────────┘
                │
                ▼
 ┌────────────────────────────┐
 │ SpikingRxModel             │
-│ ch → eq → llr              │
+│ SEW-ResNet + LIF neurons   │
+│ ch → eq → llr prediction   │
 └──────────────┬─────────────┘
                │
                ▼
@@ -86,9 +102,183 @@ This ensures that performance differences (BER) are solely due to the receiver d
 
 ---
 
-## Repository Layout
+# 4. Dataset Format (Bundle Structure)
 
-```text
+Each bundle contains:
+
+```
+fullgrid.bin
+dmrs_mask.bin
+data_mask.bin
+demapper_llr_f32.bin
+txbits.bin
+ldpc_cfg.txt
+pdsch_cfg.txt
+```
+
+---
+
+# 5. Carrier Reordering (Critical)
+
+OAI FFT indexing follows circular resource mapping:
+
+```python
+idx = (np.arange(used_sc) + first_carrier_offset) % n_sc_full
+```
+
+### Why necessary
+
+Without this:
+
+- DMRS alignment breaks  
+- channel estimation target incorrect  
+- LLR supervision invalid  
+- BER comparison becomes meaningless  
+
+---
+
+# 6. Input Representation
+
+```
+[B, T, C, H, W] = [B, 1, 4, 14, 1272]
+```
+
+| Channel | Description |
+|--------|------------|
+| 0 | Real part |
+| 1 | Imag part |
+| 2 | DMRS mask |
+| 3 | Data mask |
+
+---
+
+# 7. Model Architecture
+
+```
+shared spiking encoder
+→ channel estimation head
+→ equalization head
+→ LLR prediction head
+```
+
+Outputs:
+
+```
+ch  : [B, 2, H, W]
+eq  : [B, 2, H, W]
+llr : [B, G]
+```
+
+---
+
+# 8. LLR Calibration
+
+```
+LLR' = LLR / T   (T = 2.0)
+```
+
+Ensures compatibility with OAI LDPC decoder.
+
+---
+
+# 9. Training
+
+```bash
+python src/train/train_spikingrx_oai.py \
+    --dataset ./dataset_oai_bundle \
+    --epochs 100 \
+    --batch-size 8
+```
+
+---
+
+# 10. Inference
+
+```bash
+python src/inference/infer_oai_serial.py \
+    --bundle example_bundle/sample_0001 \
+    --ckpt checkpoints/spikingrx_oai_serial_best.pt \
+    --out inferred_llr.bin
+```
+
+---
+
+# 11. BER Evaluation
+
+```bash
+python src/inference/check_oai_llr_decode.py \
+    inferred_llr.bin \
+    ldpc_cfg.txt \
+    pdsch_cfg.txt \
+    txbits.bin \
+    --rmunmatch ./oai_change/rmunmatch_spx \
+    --ldpctest ./oai_change/ldpctest_spx
+```
+
+---
+
+# 12. Metric Definition
+
+```
+BER = (# erroneous bits) / (total transmitted bits)
+```
+
+- computed after LDPC decoding  
+- averaged across bundles  
+
+---
+
+# 13. Dataset Selection Policy
+
+- warm-up bundles removed  
+- only steady-state data used  
+- deterministic selection  
+
+---
+
+# 14. Experimental Results
+
+Stored under:
+
+```
+spx_records/snapshots_snr/
+```
+
+Includes:
+
+- BER vs SNR  
+- SpikingRx vs OAI comparison  
+- LLR statistics  
+- case-wise analysis  
+
+---
+
+# 15. Limitations
+
+- QPSK only  
+- single code block  
+- single slot  
+- AWGN channel  
+
+Not claimed:
+
+- universal superiority  
+- coding gain improvement  
+
+---
+
+# 16. Future Work
+
+- higher modulation  
+- MIMO  
+- BLER  
+- hardware deployment  
+
+---
+
+# 17. Repository Layout
+
+```
 SpikingRx-on-OAI/
 ├── src/
 ├── oai_change/
@@ -100,280 +290,22 @@ SpikingRx-on-OAI/
 
 ---
 
-## Purpose of `oai_change/`
+# 18. Dataset
 
-This module modifies OpenAirInterface to support:
-
-### 1. PHY-level data extraction
-
-- FFT-domain received grid  
-- channel estimates  
-- equalized symbols  
-- demapper LLR  
-- transport block bits  
-
-### 2. Decoder validation tools
-
-- `rmunmatch_spx`  
-- `ldpctest_spx`  
-
-### 3. Reproducibility layer
-
-- patch-based OAI modification tracking  
-
----
-
-## Dataset Format
-
-Each bundle contains:
-
-```text
-fullgrid.bin
-dmrs_mask.bin
-data_mask.bin
-demapper_llr_f32.bin
-txbits.bin
-ldpc_cfg.txt
-pdsch_cfg.txt
 ```
-
-### Dataset Selection Policy
-
-Bundles are selected chronologically after the removal of the PHY warm-up transient region. Only steady-state samples are used to avoid initialization bias. No random sampling is applied within a noise condition.
-
----
-
-## Carrier Reordering (Critical)
-
-OAI FFT indexing is circular and must be explicitly reconstructed:
-
-```python
-idx = (np.arange(used_sc) + first_carrier_offset) % n_sc_full
-```
-
-OAI FFT indexing follows circular FFT bin mapping due to NR resource grid wrapping. Direct slicing leads to DMRS misalignment and incorrect LLR supervision. Therefore, circular permutation is required to restore true subcarrier ordering.
-
-Failure to apply correct indexing results in:
-
-- DMRS misalignment  
-- incorrect equalization targets  
-- invalid BER computation  
-
----
-
-## Network Input
-
-```text
-[B, T, C, H, W] = [B, 1, 4, 14, 1272]
-```
-
-| Channel | Description |
-|----------|-------------|
-| 0 | Real part |
-| 1 | Imag part |
-| 2 | DMRS mask |
-| 3 | Data mask |
-
----
-
-## Model Architecture
-
-```text
-shared spiking encoder
-→ channel estimation head
-→ equalization head
-→ LLR prediction head
-```
-
-Outputs:
-
-```text
-ch  : [B, 2, 14, 1272]
-eq  : [B, 2, 14, 1272]
-llr : [B, G]
+https://drive.google.com/file/d/1vO04jncqe-hFHiepl01yRuGgezznBQ16/view
 ```
 
 ---
 
-## LLR Calibration
+# 19. Notes
 
-SpikingRx outputs are temperature-scaled LLRs:
-
-```text
-LLR' = LLR / T, where T = 2.0
-```
-
-This ensures statistical compatibility with the OAI demapper LLR distribution before LDPC decoding, preventing downstream decoding failures caused by distribution mismatch.
+- Raw OAI dumps are not included due to storage constraints  
+- Only processed snapshots and evaluation results are provided  
+- All results are reproducible from bundle format  
 
 ---
 
-## Training
-
-```bash
-python src/train/train_oai_serial.py \
-    --dataset ./dataset_oai_bundle \
-    --epochs 100 \
-    --batch-size 8
-```
-
----
-
-## Inference
-
-```bash
-python src/inference/infer_oai_serial.py \
-    --bundle example_bundle/sample_0001 \
-    --ckpt checkpoints/spikingrx_oai_serial_best.pt \
-    --out inferred_llr.bin
-```
-
----
-
-## BER Evaluation
-
-```bash
-python src/inference/check_oai_llr_decode.py \
-    inferred_llr.bin \
-    example_bundle/sample_0001/ldpc_cfg.txt \
-    example_bundle/sample_0001/pdsch_cfg.txt \
-    example_bundle/sample_0001/txbits.bin \
-    --rmunmatch ./oai_change/rmunmatch_spx \
-    --ldpctest ./oai_change/ldpctest_spx
-```
-
-### Evaluation chain
-
-```text
-LLR
-→ rate de-matching
-→ LDPC decoding
-→ transport block comparison
-→ BER
-```
-
----
-
-## Experimental Results
-
-All results are stored under:
-
-```text
-spx_records/snapshots_snr/
-```
-
-### Reported outputs
-
-#### 1. BER vs SNR curves
-
-- SpikingRx BER vs SNR
-- OAI demapper BER vs SNR
-- Direct comparison under identical channel realizations
-
-#### 2. LLR-level analysis
-
-- Correlation vs SNR
-- Distribution consistency
-- Case-wise scatter evaluation
-
-#### 3. Case-wise evaluation
-
-- high-SNR regime
-- waterfall (cliff) region
-- low-SNR regime
-
----
-
-## BER Reporting Convention
-
-BER is computed at the transport block level after LDPC decoding:
-
-```text
-BER = (# of erroneous bits) / (total transmitted bits)
-```
-
-Final BER per SNR point is averaged across `N` valid bundles.
-
-Typical behavior:
-
-- High SNR: BER ≈ 0  
-- Transition region: rapid increase (waterfall effect)  
-- Low SNR: BER saturates (~0.2–0.5 depending on coding rate)
-
----
-
-## Output Artifacts
-
-Generated during evaluation:
-
-- BER vs SNR summary tables  
-- SpikingRx vs OAI comparison CSV  
-- LLR statistics per SNR  
-- Case study reports  
-
----
-
-## Limitations
-
-- QPSK modulation only  
-- Single code block (`C = 1`)  
-- Single slot processing (`T = 1`)  
-- AWGN channel only  
-
-**This work does not claim:**
-- Improvement in channel coding performance.
-- Superiority over the optimal MMSE receiver under all SNR regimes.
-- Generalization beyond AWGN and the current OAI configuration.
-
----
-
-## Future Work
-
-- Extension to higher-order modulation (16QAM / 64QAM)  
-- Multi-codeblock decoding  
-- BLER evaluation  
-- Temporal modeling across slots  
-- Comparison with classical MMSE receivers  
-- Hardware / neuromorphic deployment
-
----
-
-## Dataset (Google Drive)
-
-Due to the size and file granularity of the raw OAI dumps, the dataset is distributed as a compressed archive via Google Drive:
-
-```text
-[https://drive.google.com/file/d/1vO04jncqe-hFHiepl01yRuGgezznBQ16/view?usp=sharing](https://drive.google.com/file/d/1vO04jncqe-hFHiepl01yRuGgezznBQ16/view?usp=sharing)
-```
-
----
-
-### Contents
-
-The archive contains processed experimental outputs located under:
-
-```text
-spx_records/snapshots_snr/
-```
-
-The provided data includes:
-
-- BER vs SNR evaluation results (SpikingRx and OAI baseline)
-- Noise sweep summaries
-- LLR statistical analysis (correlation, histogram, scatter)
-- Case-wise evaluation across different SNR regimes
-
----
-
-### Notes
-
-- Raw bundle data (e.g., `*.bin`, `bundle_noise_power_*`) is not included due to storage constraints.
-- Only processed results and visualization outputs are provided.
-- The dataset is packaged as a `.tar.gz` archive for efficient distribution.
-
----
-
-### Extraction
-
-```bash
-tar -xzvf snapshots_snr.tar.gz
-```
+# ================================
+# END
+# ================================
