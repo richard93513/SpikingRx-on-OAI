@@ -32,7 +32,8 @@ OAI full-grid FFT dump
 ---
 
 ## Receiver Comparison Setup
-<img width="1189" height="4405" alt="mermaid-diagram" src="https://github.com/user-attachments/assets/09489b3b-b6e8-4c8e-928a-2fe11b8cb382" />
+<img width="2054" height="8192" alt="5G NR OAI Full-Grid SNN-2026-04-15-063342" src="https://github.com/user-attachments/assets/fd7a7891-5aa2-4c30-9feb-3e19c5dfbb9c" />
+
 
 ## Full Pipeline
 
